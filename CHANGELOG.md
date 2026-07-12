@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.9] - 2026-07-12
+
+### Added
+- File exclusion patterns and an optional total diff budget, based on upstream's large-PR controls
+- Visible coverage notes for excluded, patchless, budget-skipped, and truncated files
+- Node 20 and Node 24 CI coverage with committed bundle verification
+
+### Fixed
+- Inline suggestion threading no longer fails from a circular module dependency
+- Oversized individual patches are bounded instead of exceeding the per-request chunk limit
+- API retries now stop on permanent 4xx responses and honor bounded `Retry-After` delays
+- Resolved review threads are read from GitHub's GraphQL API and comment lookups are fully paginated
+- Custom security patterns are included in the posted review, not only workflow logs
+- Finding summaries preserve file and line locations, and findings after an outside-diff item are classified correctly
+- Identical fixes at different locations are no longer incorrectly deduplicated
+- Runtime dependencies were updated to remove known production vulnerabilities
+
+### Changed
+- Release creation now waits for successful CI and publishes only prewritten changelog content
+- The deprecated feedback-commit input no longer runs unsafe Git commands from a pull request action
+
 ## [0.0.8] - 2026-03-28
 
 ### Fixed
@@ -190,3 +211,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.0.2]: https://github.com/bizzkoot/zai-code-review/releases/tag/v0.0.2
 
 [0.0.3]: https://github.com/bizzkoot/zai-code-review/releases/tag/v0.0.3
+
+[0.0.9]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.9

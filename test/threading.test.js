@@ -131,7 +131,33 @@ describe('Threading Functions', () => {
         repo: 'repo',
         pull_number: 42,
         per_page: 100,
+        page: 1,
       });
+    });
+
+    it('fetches all review comment pages', async () => {
+      const firstPage = Array.from({ length: 100 }, (_, index) => ({
+        id: index,
+        path: 'foo.js',
+        line: index + 1,
+        body: `Comment ${index}`,
+      }));
+      const mockOctokit = {
+        rest: {
+          pulls: {
+            listReviewComments: jest.fn()
+              .mockResolvedValueOnce({ data: firstPage })
+              .mockResolvedValueOnce({
+                data: [{ id: 101, path: 'bar.js', line: 1, body: 'Last comment' }],
+              }),
+          },
+        },
+      };
+
+      const threads = await getExistingCommentThreads(mockOctokit, 'owner', 'repo', 1);
+
+      expect(mockOctokit.rest.pulls.listReviewComments).toHaveBeenCalledTimes(2);
+      expect(threads.get('bar.js:1')).toHaveLength(1);
     });
   });
 

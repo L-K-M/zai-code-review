@@ -1,24 +1,85 @@
-const core = require('@actions/core');
-const github = require('@actions/github');
 const https = require('https');
 
 const ConversationalFeedback = require('./review/ConversationalFeedback');
 const InlineSuggestion = require('./review/InlineSuggestion');
 const FeedbackLearning = require('./review/FeedbackLearning');
 const SecurityCheck = require('./review/SecurityCheck');
+const { calculateSimilarity, findSimilarThread } = require('./review/ThreadSimilarity');
+
+let core;
+let github;
+
+async function loadActionsToolkit() {
+  if (!core || !github) {
+    [core, github] = await Promise.all([
+      import('@actions/core'),
+      import('@actions/github'),
+    ]);
+  }
+}
 
 const ZAI_API_URL = 'https://api.z.ai/api/coding/paas/v4/chat/completions';
 const COMMENT_MARKER = '<!-- zai-code-review -->';
 const ERR_PREFIX = 'Z.ai API: ';
 const MAX_RESPONSE_SIZE = 1024 * 1024;
+const MAX_COMMENT_SIZE = 65000;
 const REQUEST_TIMEOUT_MS = 300_000;
 const PER_PAGE = 100;
 const MAX_CHUNK_SIZE = 50000;
+const MAX_LISTED_FILES = 20;
 const RETRY_CONFIG = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 8000,
 };
+
+function matchesPattern(filename, pattern) {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*\//g, '\x00')
+    .replace(/\*\*/g, '\x01')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+    .replace(/\x00/g, '(?:.*/)?')
+    .replace(/\x01/g, '.*');
+  const regex = new RegExp(`^${escaped}$`);
+  const basename = filename.split('/').pop();
+  return regex.test(filename) || regex.test(basename);
+}
+
+function filterFiles(files, excludePatterns) {
+  if (!excludePatterns || excludePatterns.length === 0) {
+    return files;
+  }
+  return files.filter(file => !excludePatterns.some(pattern => {
+    return matchesPattern(file.filename, pattern);
+  }));
+}
+
+function limitFilesByDiffChars(files, maxDiffChars) {
+  if (!Number.isInteger(maxDiffChars) || maxDiffChars <= 0) {
+    return { files, skippedFiles: [] };
+  }
+
+  const includedFiles = [];
+  const skippedFiles = [];
+  let totalChars = 0;
+
+  for (const file of files) {
+    if (!file.patch) {
+      continue;
+    }
+    const entrySize = file.patch.length + file.filename.length + 50;
+    if (totalChars + entrySize > maxDiffChars) {
+      skippedFiles.push(file.filename);
+      continue;
+    }
+    includedFiles.push(file);
+    totalChars += entrySize;
+  }
+
+  return { files: includedFiles, skippedFiles };
+}
 
 function hashString(str) {
   let hash = 0;
@@ -60,14 +121,19 @@ function splitIntoChunks(files) {
   for (const file of filesWithPatches) {
     const fileSize = file.patch.length;
 
-    // Mark files that exceed chunk size individually
+    // Keep each request bounded even when GitHub returns an unusually large patch.
     if (fileSize > MAX_CHUNK_SIZE) {
       if (currentChunk.length > 0) {
         chunks.push(currentChunk);
         currentChunk = [];
         currentSize = 0;
       }
-      chunks.push([{ ...file, oversized: true }]);
+      chunks.push([{
+        ...file,
+        patch: file.patch.slice(0, MAX_CHUNK_SIZE),
+        truncated: true,
+        originalPatchLength: fileSize,
+      }]);
       continue;
     }
 
@@ -88,6 +154,77 @@ function splitIntoChunks(files) {
   return chunks;
 }
 
+function formatFileList(files) {
+  const visibleFiles = files.slice(0, MAX_LISTED_FILES);
+  const remaining = files.length - visibleFiles.length;
+  const list = visibleFiles.map(file => `\`${file}\``).join(', ');
+  return remaining > 0 ? `${list}, and ${remaining} more` : list;
+}
+
+function buildCoverageWarning({ excludedFiles = [], patchlessFiles = [], skippedFiles = [], truncatedFiles = [] }) {
+  const details = [];
+  if (excludedFiles.length > 0) {
+    details.push(`excluded by pattern: ${formatFileList(excludedFiles)}`);
+  }
+  if (patchlessFiles.length > 0) {
+    details.push(`no patch returned by GitHub: ${formatFileList(patchlessFiles)}`);
+  }
+  if (skippedFiles.length > 0) {
+    details.push(`over the diff budget: ${formatFileList(skippedFiles)}`);
+  }
+  if (truncatedFiles.length > 0) {
+    details.push(`truncated to ${MAX_CHUNK_SIZE} characters: ${formatFileList(truncatedFiles)}`);
+  }
+  if (details.length === 0) {
+    return '';
+  }
+  return [
+    '> [!NOTE]',
+    '> Review coverage was limited for some files:',
+    ...details.map(detail => `> - ${detail}`),
+  ].join('\n');
+}
+
+function buildCommentBody(reviewerName, review) {
+  const safeReviewerName = String(reviewerName || 'Z.ai Code Review').slice(0, 200);
+  const prefix = `## ${safeReviewerName}\n\n`;
+  const suffix = `\n\n${COMMENT_MARKER}`;
+  const body = `${prefix}${review}${suffix}`;
+  if (body.length <= MAX_COMMENT_SIZE) {
+    return body;
+  }
+
+  const truncationNotice = [
+    '> [!WARNING]',
+    '> Review output was truncated and shown as plain text to fit GitHub\'s comment size limit.',
+  ].join('\n');
+  const prePrefix = '\n\n<pre>';
+  const preSuffix = '</pre>';
+  const fixedSize = prefix.length + truncationNotice.length + prePrefix.length
+    + preSuffix.length + suffix.length;
+  let low = 0;
+  let high = Math.min(review.length, MAX_COMMENT_SIZE - fixedSize);
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const escapedLength = escapeHtml(review.slice(0, middle)).length;
+    if (fixedSize + escapedLength <= MAX_COMMENT_SIZE) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  const escapedReview = escapeHtml(review.slice(0, low));
+
+  return `${prefix}${truncationNotice}${prePrefix}${escapedReview}${preSuffix}${suffix}`;
+}
+
+function escapeHtml(value) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function buildChunkPrompt(files, chunkIndex, totalChunks) {
   const diffs = files
     .filter(f => f.patch)
@@ -105,14 +242,14 @@ function buildChunkPrompt(files, chunkIndex, totalChunks) {
   return prompt;
 }
 
-function formatApiRequestLabel({ chunkIndex, totalChunks, fileCount, oversizedFileCount, patchChars, promptChars }) {
+function formatApiRequestLabel({ chunkIndex, totalChunks, fileCount, truncatedFileCount, patchChars, promptChars }) {
   const parts = [
     `chunk ${chunkIndex + 1}/${totalChunks}`,
     `${fileCount} file(s)`,
   ];
 
-  if (oversizedFileCount > 0) {
-    parts.push(`${oversizedFileCount} oversized file(s)`);
+  if (truncatedFileCount > 0) {
+    parts.push(`${truncatedFileCount} truncated file(s)`);
   }
 
   parts.push(`${patchChars} patch chars`);
@@ -143,7 +280,7 @@ function formatChunkMergeSummary(successfulChunks, totalChunks) {
   return `Combined ${successfulChunks} successful review chunk(s) into single comment. ${failedChunks} chunk(s) failed.`;
 }
 
-function buildCombinedReview(reviews, totalChunks, actionableCount) {
+function buildCombinedReview(reviews, totalChunks, actionableCount, coverageWarning = '') {
   const failedChunks = reviews
     .filter(review => !review.success)
     .map(review => ({ index: review.index, error: review.error || review.review || 'Unknown error' }));
@@ -179,15 +316,12 @@ function buildCombinedReview(reviews, totalChunks, actionableCount) {
   });
   const failureWarning = buildChunkFailureWarning(failedChunks, totalChunks);
 
-  return failureWarning
-    ? `${failureWarning}\n\n${formattedReview}`.trim()
-    : formattedReview;
+  return [coverageWarning, failureWarning, formattedReview].filter(Boolean).join('\n\n').trim();
 }
 
 function extractActionableSuggestions(reviews) {
   const suggestions = [];
   const seen = new Set();
-  const contentHashes = new Set();
 
   for (const review of reviews) {
     const content = review.rawReview || '';
@@ -210,19 +344,12 @@ function extractActionableSuggestions(reviews) {
 
       // Deduplicate by file:line:body combination
       const id = `${path}:${line}:${body}`;
-      const contentHash = hashString(`${body}:${suggestion}`.toLowerCase());
-      
+
       if (seen.has(id)) {
-        continue; // Skip duplicate file:line:body
-      }
-      
-      // Skip if same content was already seen (regardless of line)
-      if (contentHashes.has(contentHash)) {
         continue;
       }
 
       seen.add(id);
-      contentHashes.add(contentHash);
       suggestions.push({
         id,
         path,
@@ -318,7 +445,10 @@ function callZaiApi(apiKey, model, systemPrompt, prompt) {
             resolve(content);
           }
         } else {
-          reject(new Error(`${ERR_PREFIX}HTTP ${res.statusCode}.`));
+          const error = new Error(`${ERR_PREFIX}HTTP ${res.statusCode}.`);
+          error.statusCode = res.statusCode;
+          error.retryAfterMs = parseRetryAfter(res.headers['retry-after']);
+          reject(error);
         }
       });
     });
@@ -332,6 +462,28 @@ function callZaiApi(apiKey, model, systemPrompt, prompt) {
   });
 }
 
+function parseRetryAfter(value) {
+  if (!value) {
+    return 0;
+  }
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? 0 : Math.max(0, timestamp - Date.now());
+}
+
+function isRetryableError(error) {
+  if (!error?.statusCode) {
+    return true;
+  }
+  return error.statusCode === 408
+    || error.statusCode === 429
+    || error.statusCode === 529
+    || error.statusCode >= 500;
+}
+
 async function callZaiApiWithRetry(apiKey, model, systemPrompt, prompt, requestLabel = 'request') {
   let lastError;
 
@@ -342,16 +494,20 @@ async function callZaiApiWithRetry(apiKey, model, systemPrompt, prompt, requestL
     } catch (err) {
       lastError = err;
       const elapsedMs = Date.now() - attemptStartedAt;
-      core.info(
+      core?.info(
         `API call failed for ${requestLabel} (attempt ${attempt + 1}/${RETRY_CONFIG.maxRetries}) after ${elapsedMs}ms: ${err.message}`
       );
 
+      if (!isRetryableError(err)) {
+        throw err;
+      }
+
       if (attempt < RETRY_CONFIG.maxRetries - 1) {
         const delayMs = Math.min(
-          RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt),
+          Math.max(RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt), err.retryAfterMs || 0),
           RETRY_CONFIG.maxDelayMs
         );
-        core.info(`Retrying ${requestLabel} in ${delayMs}ms...`);
+        core?.info(`Retrying ${requestLabel} in ${delayMs}ms...`);
         await new Promise(r => setTimeout(r, delayMs));
       }
     }
@@ -361,6 +517,81 @@ async function callZaiApiWithRetry(apiKey, model, systemPrompt, prompt, requestL
 }
 
 async function filterResolvedSuggestions(octokit, owner, repo, pullNumber, suggestions) {
+  try {
+    if (typeof octokit.graphql === 'function') {
+      const resolvedThreads = new Map();
+      let cursor = null;
+      do {
+        const data = await octokit.graphql(`
+          query($owner: String!, $repo: String!, $pullNumber: Int!, $cursor: String) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $pullNumber) {
+                reviewThreads(first: 100, after: $cursor) {
+                  nodes {
+                    isResolved
+                    comments(first: 100) {
+                      nodes { path line originalLine body }
+                    }
+                  }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+            }
+          }
+        `, { owner, repo, pullNumber, cursor });
+        const threads = data.repository.pullRequest.reviewThreads;
+        for (const thread of threads.nodes) {
+          if (!thread.isResolved) {
+            continue;
+          }
+          for (const comment of thread.comments.nodes) {
+            const key = `${comment.path}:${comment.line || comment.originalLine}`;
+            if (!resolvedThreads.has(key)) {
+              resolvedThreads.set(key, []);
+            }
+            resolvedThreads.get(key).push(comment);
+          }
+        }
+        cursor = threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null;
+      } while (cursor);
+      return suggestions.filter(suggestion => !findSimilarThread(resolvedThreads, suggestion));
+    }
+
+    // Retain support for Octokit-compatible clients that do expose resolution state.
+    const comments = [];
+    let page = 1;
+    while (true) {
+      const { data } = await octokit.rest.pulls.listReviewComments({
+        owner,
+        repo,
+        pull_number: pullNumber,
+        per_page: PER_PAGE,
+        page,
+      });
+      comments.push(...data);
+      if (data.length < PER_PAGE) break;
+      page++;
+    }
+
+    const resolvedThreads = new Map();
+    for (const comment of comments) {
+      if (comment.state === 'RESOLVED' || comment.resolved) {
+        const key = `${comment.path}:${comment.line || comment.original_line}`;
+        if (!resolvedThreads.has(key)) {
+          resolvedThreads.set(key, []);
+        }
+        resolvedThreads.get(key).push(comment);
+      }
+    }
+
+    return suggestions.filter(suggestion => !findSimilarThread(resolvedThreads, suggestion));
+  } catch (err) {
+    core?.warning(`Could not filter resolved suggestions: ${err.message}`);
+    return suggestions;
+  }
+}
+
+async function getExistingCommentThreads(octokit, owner, repo, pullNumber) {
   try {
     const comments = [];
     let page = 1;
@@ -377,59 +608,6 @@ async function filterResolvedSuggestions(octokit, owner, repo, pullNumber, sugge
       page++;
     }
 
-    // Get resolved comment IDs by file:line key
-    const resolvedIds = new Set();
-    for (const comment of comments) {
-      // Check if comment has resolved state
-      if (comment.state === 'RESOLVED' || comment.resolved) {
-        const key = `${comment.path}:${comment.line || comment.original_line}`;
-        resolvedIds.add(key);
-      }
-    }
-
-    // Also check via reviews API for outdated reviews
-    try {
-      await octokit.rest.pulls.listReviews({
-        owner,
-        repo,
-        pull_number: pullNumber,
-      });
-      // Note: APPROVED and CHANGES_REQUESTED reviews don't necessarily mean resolved,
-      // but we can add additional filtering logic here if needed.
-      // For now, we only filter by explicit RESOLVED state.
-    } catch (err) {
-      core.warning(`Could not fetch review state: ${err.message}`);
-    }
-
-    // Filter suggestions to exclude resolved ones
-    return suggestions.filter(s => {
-      const key = `${s.path}:${s.line}`;
-      return !resolvedIds.has(key);
-    });
-  } catch (err) {
-    core.warning(`Could not filter resolved suggestions: ${err.message}`);
-    // Return all suggestions if filtering fails (fail-open)
-    return suggestions;
-  }
-}
-
-function calculateSimilarity(str1, str2) {
-  const words1 = new Set(str1.split(/\s+/).filter(w => w.length > 0));
-  const words2 = new Set(str2.split(/\s+/).filter(w => w.length > 0));
-  const intersection = [...words1].filter(w => words2.has(w));
-  const union = new Set([...words1, ...words2]);
-  return union.size === 0 ? 0 : intersection.length / union.size;
-}
-
-async function getExistingCommentThreads(octokit, owner, repo, pullNumber) {
-  try {
-    const { data: comments } = await octokit.rest.pulls.listReviewComments({
-      owner,
-      repo,
-      pull_number: pullNumber,
-      per_page: 100,
-    });
-
     const threads = new Map();
     for (const comment of comments) {
       const key = `${comment.path}:${comment.line || comment.original_line || 'noline'}`;
@@ -440,45 +618,73 @@ async function getExistingCommentThreads(octokit, owner, repo, pullNumber) {
     }
     return threads;
   } catch (err) {
-    core.warning(`Failed to fetch existing threads: ${err.message}`);
+    core?.warning(`Failed to fetch existing threads: ${err.message}`);
     return new Map();
   }
 }
 
-function findSimilarThread(threads, suggestion, threshold = 0.6) {
-  const key = `${suggestion.path}:${suggestion.line}`;
-  const existing = threads.get(key);
-
-  if (!existing || existing.length === 0) {
-    return null;
+async function getIssueComments(octokit, owner, repo, pullNumber) {
+  const comments = [];
+  let page = 1;
+  while (true) {
+    const { data } = await octokit.rest.issues.listComments({
+      owner,
+      repo,
+      issue_number: pullNumber,
+      per_page: PER_PAGE,
+      page,
+    });
+    comments.push(...data);
+    if (data.length < PER_PAGE) break;
+    page++;
   }
+  return comments;
+}
 
-  for (const comment of existing) {
-    const similarity = calculateSimilarity(
-      suggestion.body.toLowerCase(),
-      comment.body.toLowerCase()
-    );
-    if (similarity > threshold) {
-      return comment;
-    }
+async function upsertReviewComment(octokit, owner, repo, pullNumber, body) {
+  const comments = await getIssueComments(octokit, owner, repo, pullNumber);
+  const existing = comments.find(comment => comment.body?.includes(COMMENT_MARKER));
+
+  if (existing) {
+    await octokit.rest.issues.updateComment({
+      owner,
+      repo,
+      comment_id: existing.id,
+      body,
+    });
+    core?.info('Review comment updated.');
+  } else {
+    await octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: pullNumber,
+      body,
+    });
+    core?.info('Review comment posted.');
   }
-  return null;
 }
 
 async function run() {
+  await loadActionsToolkit();
   const apiKey = core.getInput('ZAI_API_KEY', { required: true });
   core.setSecret(apiKey);
   const model = core.getInput('ZAI_MODEL') || 'glm-4.7';
   const systemPrompt = core.getInput('ZAI_SYSTEM_PROMPT');
   const reviewerName = core.getInput('ZAI_REVIEWER_NAME');
+  const excludePatterns = core.getInput('EXCLUDE_PATTERNS')
+    .split(',')
+    .map(pattern => pattern.trim())
+    .filter(Boolean);
+  const parsedMaxDiffChars = Number.parseInt(core.getInput('MAX_DIFF_CHARS'), 10);
+  const maxDiffChars = Number.isInteger(parsedMaxDiffChars) && parsedMaxDiffChars >= 0
+    ? parsedMaxDiffChars
+    : 0;
   const token = core.getInput('GITHUB_TOKEN');
   core.setSecret(token);
   let threadSimilarityThreshold = parseFloat(core.getInput('ZAI_THREAD_SIMILARITY_THRESHOLD'));
   if (isNaN(threadSimilarityThreshold) || threadSimilarityThreshold < 0 || threadSimilarityThreshold > 1) {
     threadSimilarityThreshold = 0.6;
   }
-  const commitFeedback = core.getInput('ZAI_COMMIT_FEEDBACK').toLowerCase() === 'true';
-
   const { context } = github;
   const { owner, repo } = context.repo;
   const pullNumber = context.payload.pull_request?.number;
@@ -501,9 +707,34 @@ async function run() {
   core.info(`Fetching changed files for PR #${pullNumber}...`);
 
   const files = await getChangedFiles(octokit, owner, repo, pullNumber);
+  const filteredFiles = filterFiles(files, excludePatterns);
+  const excludedFiles = files
+    .filter(file => !filteredFiles.includes(file))
+    .map(file => file.filename);
+  const patchlessFiles = filteredFiles.filter(file => !file.patch).map(file => file.filename);
+  const limited = limitFilesByDiffChars(filteredFiles, maxDiffChars);
+  const reviewFiles = limited.files;
+  const scopeCoverageWarning = buildCoverageWarning({
+    excludedFiles,
+    patchlessFiles,
+    skippedFiles: limited.skippedFiles,
+  });
 
-  if (!files.some(f => f.patch)) {
-    core.info('No patchable changes found. Skipping review.');
+  if (excludedFiles.length > 0) {
+    core.info(`Excluded ${excludedFiles.length} file(s) matching EXCLUDE_PATTERNS.`);
+  }
+  if (limited.skippedFiles.length > 0) {
+    core.warning(`Skipped ${limited.skippedFiles.length} file(s) over MAX_DIFF_CHARS.`);
+  }
+
+  if (!reviewFiles.some(f => f.patch)) {
+    const emptyReview = ConversationalFeedback.formatReview('');
+    const body = buildCommentBody(
+      reviewerName,
+      [scopeCoverageWarning, emptyReview].filter(Boolean).join('\n\n')
+    );
+    await upsertReviewComment(octokit, owner, repo, pullNumber, body);
+    core.info('No patchable changes found within the configured review scope.');
     return;
   }
 
@@ -515,7 +746,7 @@ async function run() {
     core.info(`Loaded ${customPatterns.length} custom security pattern(s) from .zai-review.yaml`);
   }
 
-  const securityFindings = SecurityCheck.checkSecurity(files, customPatterns);
+  const securityFindings = SecurityCheck.checkSecurity(reviewFiles, customPatterns);
   if (securityFindings.length > 0) {
     core.warning(`Security findings detected: ${securityFindings.length}`);
     for (const finding of securityFindings) {
@@ -523,18 +754,30 @@ async function run() {
     }
   }
 
-  const chunks = splitIntoChunks(files);
-  core.info(`Processing ${files.length} file(s) in ${chunks.length} chunk(s)...`);
+  const chunks = splitIntoChunks(reviewFiles);
+  const truncatedFiles = chunks
+    .flat()
+    .filter(file => file.truncated)
+    .map(file => file.filename);
+  const coverageWarning = buildCoverageWarning({
+    excludedFiles,
+    patchlessFiles,
+    skippedFiles: limited.skippedFiles,
+    truncatedFiles,
+  });
+  core.info(`Processing ${reviewFiles.length} file(s) in ${chunks.length} chunk(s)...`);
 
   const reviews = [];
   const failedChunks = [];
 
   for (let i = 0; i < chunks.length; i++) {
     try {
-      const oversizedFiles = chunks[i].filter(f => f.oversized);
-      if (oversizedFiles.length > 0) {
-        for (const f of oversizedFiles) {
-          core.warning(`File ${f.filename} exceeds chunk size limit (${f.patch.length} bytes). Review may be incomplete.`);
+      const truncatedChunkFiles = chunks[i].filter(f => f.truncated);
+      if (truncatedChunkFiles.length > 0) {
+        for (const file of truncatedChunkFiles) {
+          core.warning(
+            `File ${file.filename} was truncated from ${file.originalPatchLength} to ${MAX_CHUNK_SIZE} characters.`
+          );
         }
       }
       core.info(`Processing chunk ${i + 1}/${chunks.length} (${chunks[i].length} file(s))...`);
@@ -543,14 +786,14 @@ async function run() {
         chunkIndex: i,
         totalChunks: chunks.length,
         fileCount: chunks[i].length,
-        oversizedFileCount: oversizedFiles.length,
+        truncatedFileCount: truncatedChunkFiles.length,
         patchChars: chunks[i].reduce((total, file) => total + (file.patch?.length || 0), 0),
         promptChars: prompt.length,
       });
       const rawReview = await callZaiApiWithRetry(apiKey, model, systemPrompt, prompt, requestLabel);
       const review = ConversationalFeedback.postProcess(rawReview);
       // Prepend actionable security findings for this chunk
-      const chunkFindings = SecurityCheck.checkSecurity(chunks[i]);
+      const chunkFindings = SecurityCheck.checkSecurity(chunks[i], customPatterns);
       const securityReview = formatSecurityFindingsForReview(chunkFindings);
       const summaryReview = securityReview ? `${securityReview}\n\n${rawReview}` : rawReview;
       let reviewWithSecurity = review;
@@ -593,34 +836,16 @@ async function run() {
     );
   }
 
-  const combinedReview = buildCombinedReview(reviews, chunks.length, actionableSuggestions.length);
+  const combinedReview = buildCombinedReview(
+    reviews,
+    chunks.length,
+    actionableSuggestions.length,
+    coverageWarning
+  );
 
-  const body = `## ${reviewerName}\n\n${combinedReview}\n\n${COMMENT_MARKER}`;
+  const body = buildCommentBody(reviewerName, combinedReview);
 
-  const { data: comments } = await octokit.rest.issues.listComments({
-    owner,
-    repo,
-    issue_number: pullNumber,
-  });
-  const existing = comments.find(c => c.body.includes(COMMENT_MARKER));
-
-  if (existing) {
-    await octokit.rest.issues.updateComment({
-      owner,
-      repo,
-      comment_id: existing.id,
-      body,
-    });
-    core.info('Review comment updated.');
-  } else {
-    await octokit.rest.issues.createComment({
-      owner,
-      repo,
-      issue_number: pullNumber,
-      body,
-    });
-    core.info('Review comment posted.');
-  }
+  await upsertReviewComment(octokit, owner, repo, pullNumber, body);
 
   // Inline suggestion integration
   if (actionableSuggestions.length > 0) {
@@ -652,39 +877,25 @@ async function run() {
     }
   }
 
-  // Listen for user feedback (accept/reject) via review events (pseudo-code, to be implemented in webhook or future extension)
-  // Example usage:
-  // FeedbackLearning.learnFromFeedback(repoId, suggestionId, accepted);
-
-  // Persist .zai-feedback.json to PR branch if enabled
-  if (commitFeedback) {
-    const feedbackFile = '.zai-feedback.json';
-    const fs = require('fs');
-    if (fs.existsSync(feedbackFile)) {
-      const execSync = require('child_process').execSync;
-      try {
-        execSync('git config --local user.email "github-actions[bot]@users.noreply.github.com"');
-        execSync('git config --local user.name "github-actions[bot]"');
-        execSync(`git add ${feedbackFile}`);
-        execSync(`git commit -m "chore: update feedback learning for PR #${pullNumber}" || true`);
-        execSync('git push');
-        core.info('.zai-feedback.json committed and pushed to PR branch.');
-      } catch (err) {
-        core.warning(`Failed to commit/push .zai-feedback.json: ${err.message}`);
-      }
-    }
-  }
 }
 
 if (require.main === module) {
-  run().catch(err => core.setFailed(err.message));
+  run().catch(async err => {
+    await loadActionsToolkit();
+    core.setFailed(err.message);
+  });
 }
 
 module.exports = {
   splitIntoChunks,
+  matchesPattern,
+  filterFiles,
+  limitFilesByDiffChars,
   buildChunkPrompt,
   buildCombinedReview,
   buildChunkFailureWarning,
+  buildCoverageWarning,
+  buildCommentBody,
   extractActionableSuggestions,
   formatApiRequestLabel,
   formatChunkMergeSummary,
@@ -695,6 +906,8 @@ module.exports = {
   findSimilarThread,
   callZaiApi,
   callZaiApiWithRetry,
+  parseRetryAfter,
+  isRetryableError,
   hashString,
   RETRY_CONFIG,
 };

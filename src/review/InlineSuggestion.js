@@ -1,6 +1,6 @@
 // Handles inline suggestion logic for code review
 
-const { findSimilarThread } = require('../index');
+const { findSimilarThread } = require('./ThreadSimilarity');
 
 class InlineSuggestion {
   static buildComments(suggestions) {

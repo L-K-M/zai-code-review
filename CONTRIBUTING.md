@@ -9,19 +9,19 @@ If you have suggestions for improvements, you can contribute by opening an issue
 ## Project structure
 
 ```
-src/index.js      # Action source code
-dist/index.js     # Compiled bundle (used by the runner)
-action.yml        # Action metadata and input definitions
+src/index.js       # Action source code
+dist/*.index.js    # Compiled bundle and dynamic chunks used by the runner
+action.yml         # Action metadata and input definitions
 ```
 
-The action runs from `dist/index.js`, which is a self-contained bundle built from `src/index.js` using [`@vercel/ncc`](https://github.com/vercel/ncc).
+The action runs from `dist/index.js` and its generated chunks, built from `src/index.js` using [`@vercel/ncc`](https://github.com/vercel/ncc).
 
 ## Development setup
 
 **Prerequisites:** Node.js 20+
 
 ```bash
-git clone https://github.com/bizzkoot/zai-code-review.git
+git clone https://github.com/L-K-M/zai-code-review.git
 cd zai-code-review
 npm install
 ```
@@ -47,7 +47,9 @@ Please keep PRs focused — one fix or feature per PR.
 
 ## Releases
 
-Releases are tagged using semantic versioning (e.g. `v0.0.3`). After a PR is merged to `main`, a maintainer will tag the release.
+Releases use semantic versioning. A release commit updates `package.json`, `package-lock.json`,
+`CHANGELOG.md`, and the committed `dist/` bundle. After CI succeeds on `main`, the release
+workflow creates the matching tag and GitHub release automatically.
 
 Users reference the action by tag in their workflows, so the `dist/index.js` and `action.yml` at the tagged commit are what gets executed.
 

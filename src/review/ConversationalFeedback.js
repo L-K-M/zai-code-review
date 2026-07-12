@@ -168,10 +168,13 @@ class ConversationalFeedback {
    * @private
    */
   static formatFinding(finding) {
-    let output = `**${finding.title}**`;
+    const heading = finding.location && finding.location !== finding.title
+      ? `${finding.location} - ${finding.title}`
+      : finding.title;
+    let output = `**${heading}**`;
 
     if (finding.isOutsideDiff) {
-      output = `**(outside diff) ${finding.title}**`;
+      output = `**(outside diff) ${heading}**`;
     }
 
     if (finding.problem) {
@@ -285,37 +288,38 @@ If a finding cannot follow the required structure, omit it rather than writing f
     const outsideDiffComments = [];
 
     const lines = rawReview.split('\n');
-    let currentSection = 'inline';
     let currentFinding = null;
+    let currentOutside = false;
+
+    const flushCurrent = () => {
+      if (!currentFinding) {
+        return;
+      }
+      if (currentOutside) {
+        outsideDiffComments.push(currentFinding);
+      } else {
+        inlineComments.push(...currentFinding.content);
+      }
+      currentFinding = null;
+      currentOutside = false;
+    };
 
     for (const line of lines) {
-      const isOutsideMarker = line.includes('(outside diff)') || line.includes('(outside the diff)');
+      const isOutsideMarker = /\(outside (?:the )?diff\)/i.test(line);
+      const isFindingHeading = /^(?:[•*-]\s*)?#{1,3}\s+\[/.test(line);
 
-      if (isOutsideMarker) {
-        if (currentSection === 'inline') {
-          currentSection = 'outside';
-        }
-        if (currentFinding) {
-          outsideDiffComments.push(currentFinding);
-        }
+      if (isFindingHeading) {
+        flushCurrent();
         currentFinding = { line, content: [line] };
-      } else if (line.match(/^#{1,3}\s+\[/) && currentSection === 'outside') {
-        if (currentFinding && currentFinding.content.length > 0) {
-          outsideDiffComments.push(currentFinding);
-        }
-        currentFinding = { line, content: [line] };
-      } else if (currentSection === 'inline') {
+        currentOutside = isOutsideMarker;
+      } else if (!currentFinding) {
         inlineComments.push(line);
       } else if (currentFinding) {
         currentFinding.content.push(line);
       }
     }
 
-    if (currentFinding && currentFinding.content.length > 0 && currentSection === 'outside') {
-      if (!outsideDiffComments.find(f => f.line === currentFinding.line)) {
-        outsideDiffComments.push(currentFinding);
-      }
-    }
+    flushCurrent();
 
     return { inlineComments: inlineComments.join('\n'), outsideDiffComments };
   }
@@ -372,10 +376,10 @@ If a finding cannot follow the required structure, omit it rather than writing f
       outsideDiffComments = []
     } = options;
 
-    let output = `**Actionable comments posted: ${actionableCount}**\n\n`;
+    let output = `**Actionable suggestions identified: ${actionableCount}**\n\n`;
 
     if (actionableCount > 0) {
-      output += '> [!NOTE]\n> Due to the large number of review comments, Critical severity comments were prioritized as inline comments.\n\n';
+      output += '> [!NOTE]\n> Inline suggestions are posted on a best-effort basis; GitHub may reject invalid or outdated diff anchors.\n\n';
     }
 
     if (hasCriticalOutsideDiff) {

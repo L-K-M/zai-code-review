@@ -16,12 +16,20 @@ inputs:
     description: "Name shown in the review comment header"
     required: false
     default: "Z.ai Code Review"
+  EXCLUDE_PATTERNS:
+    description: "Comma-separated file patterns to exclude from review (for example '*.lock,dist/**,*.min.js')"
+    required: false
+    default: "*.lock,package-lock.json,yarn.lock,pnpm-lock.yaml"
+  MAX_DIFF_CHARS:
+    description: "Maximum total diff characters sent to the API (0 = unlimited)"
+    required: false
+    default: "0"
   ZAI_THREAD_SIMILARITY_THRESHOLD:
     description: "Similarity threshold (0-1) for matching existing comment threads (default: 0.6)"
     required: false
     default: "0.6"
   ZAI_COMMIT_FEEDBACK:
-    description: "Commit feedback learning file (.zai-feedback.json) to PR branch (default: false)"
+    description: "Deprecated compatibility input; feedback files are no longer committed by the action"
     required: false
     default: "false"
   GITHUB_TOKEN:

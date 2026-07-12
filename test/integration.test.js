@@ -279,6 +279,86 @@ Invalid suggestions:
   });
 
   describe('Resolved Comment Filtering Integration', () => {
+    test('uses GraphQL review thread resolution state', async () => {
+      const mockOctokit = {
+        graphql: jest.fn().mockResolvedValue({
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                nodes: [
+                  {
+                    isResolved: true,
+                    comments: {
+                      nodes: [{
+                        path: 'src/file.js',
+                        line: 10,
+                        originalLine: 10,
+                        body: 'Resolved',
+                      }],
+                    },
+                  },
+                  {
+                    isResolved: false,
+                    comments: {
+                      nodes: [{
+                        path: 'src/file.js',
+                        line: 20,
+                        originalLine: 20,
+                        body: 'Open',
+                      }],
+                    },
+                  },
+                ],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        }),
+      };
+      const suggestions = [
+        { path: 'src/file.js', line: 10, body: 'Resolved' },
+        { path: 'src/file.js', line: 20, body: 'Open' },
+      ];
+
+      const filtered = await filterResolvedSuggestions(
+        mockOctokit, 'owner', 'repo', 42, suggestions
+      );
+
+      expect(filtered).toEqual([{ path: 'src/file.js', line: 20, body: 'Open' }]);
+    });
+
+    test('keeps a distinct suggestion at a previously resolved location', async () => {
+      const mockOctokit = {
+        graphql: jest.fn().mockResolvedValue({
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                nodes: [{
+                  isResolved: true,
+                  comments: {
+                    nodes: [{
+                      path: 'src/file.js',
+                      line: 10,
+                      originalLine: 10,
+                      body: 'Use a constant for this value',
+                    }],
+                  },
+                }],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        }),
+      };
+      const suggestion = { path: 'src/file.js', line: 10, body: 'Validate user input' };
+
+      const filtered = await filterResolvedSuggestions(
+        mockOctokit, 'owner', 'repo', 42, [suggestion]
+      );
+
+      expect(filtered).toEqual([suggestion]);
+    });
+
     test('filterResolvedSuggestions excludes resolved comments', async () => {
       const mockOctokit = {
         rest: {
@@ -289,11 +369,13 @@ Invalid suggestions:
                   path: 'src/file.js',
                   line: 10,
                   state: 'RESOLVED',
+                  body: 'Fix this',
                 },
                 {
                   path: 'src/file.js',
                   line: 20,
                   state: 'PENDING',
+                  body: 'Fix that',
                 },
               ],
             }),

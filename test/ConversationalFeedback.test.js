@@ -357,14 +357,14 @@ describe('ConversationalFeedback', () => {
     it('returns header with actionable count', () => {
       const review = '';
       const formatted = ConversationalFeedback.formatReview(review, { actionableCount: 5 });
-      expect(formatted).toContain('**Actionable comments posted: 5**');
+      expect(formatted).toContain('**Actionable suggestions identified: 5**');
     });
 
     it('includes NOTE box when actionableCount > 0', () => {
       const review = '';
       const formatted = ConversationalFeedback.formatReview(review, { actionableCount: 3 });
       expect(formatted).toContain('> [!NOTE]');
-      expect(formatted).toContain('Critical severity comments were prioritized');
+      expect(formatted).toContain('posted on a best-effort basis');
     });
 
     it('includes CAUTION box when hasCriticalOutsideDiff is true', () => {
@@ -410,7 +410,7 @@ describe('ConversationalFeedback', () => {
 
     it('handles empty review gracefully', () => {
       const formatted = ConversationalFeedback.formatReview('', { actionableCount: 0 });
-      expect(formatted).toContain('**Actionable comments posted: 0**');
+      expect(formatted).toContain('**Actionable suggestions identified: 0**');
     });
 
     it('combines all options correctly', () => {
@@ -423,7 +423,7 @@ describe('ConversationalFeedback', () => {
         actionableCount: 5,
         hasCriticalOutsideDiff: true
       });
-      expect(formatted).toContain('**Actionable comments posted: 5**');
+      expect(formatted).toContain('**Actionable suggestions identified: 5**');
       expect(formatted).toContain('> [!NOTE]');
       expect(formatted).toContain('> [!CAUTION]');
       expect(formatted).toContain('🔴 Critical/BLOCKER findings (2)');
@@ -506,8 +506,8 @@ describe('ConversationalFeedback', () => {
 
       expect(formatted).toContain('🔴 Critical/BLOCKER findings (1)');
       expect(formatted).toContain('🟡 Minor comments (1)');
-      expect(formatted).toContain('**Markdown XSS via javascript: Links**');
-      expect(formatted).toContain('**Redundant event listener causes double execution**');
+      expect(formatted).toContain('**src/a2ui/renderer.ts:~1035 - Markdown XSS via javascript: Links**');
+      expect(formatted).toContain('**src/a2ui/webview.ts:268 - Redundant event listener causes double execution**');
       expect(formatted).not.toContain('Here is the review of the provided code.');
       expect(formatted).not.toContain('Thanks for the opportunity to review this section of the codebase.');
       expect(formatted).not.toMatch(/Chunk \d+\/\d+/);
@@ -531,6 +531,22 @@ describe('ConversationalFeedback', () => {
       expect(formatted).toContain('<summary>src/a.js (1)</summary>');
       expect(formatted).toContain('<summary>src/b.js (1)</summary>');
       expect(formatted).not.toContain('<summary>General (2)</summary>');
+    });
+
+    it('returns to inline findings after an outside-diff finding', () => {
+      const rawReview = [
+        '## [MAJOR] (outside diff) src/a.js:10 - Outside issue',
+        '**Problem:** Outside the changed lines',
+        '',
+        '## [MINOR] src/b.js:20 - In-diff issue',
+        '**Problem:** Inside the changed lines',
+      ].join('\n');
+
+      const separated = ConversationalFeedback.separateOutsideDiffComments(rawReview);
+
+      expect(separated.outsideDiffComments).toHaveLength(1);
+      expect(separated.inlineComments).toContain('src/b.js:20 - In-diff issue');
+      expect(separated.outsideDiffComments[0].content.join('\n')).not.toContain('In-diff issue');
     });
   });
 });

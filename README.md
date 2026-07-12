@@ -1,15 +1,25 @@
 # Z.ai Code Review
 
-AI-powered GitHub Pull Request code review using Z.ai models. Automatic PR comments, bug detection, improvement suggestions, security checks, and feedback learning via GitHub Actions.
+AI-powered GitHub Pull Request code review using Z.ai models. Automatic PR comments, bug detection, improvement suggestions, and security checks via GitHub Actions.
 
-**Latest version: v0.0.8**
+**Latest version: v0.0.9**
 
-## ✨ What's New in v0.0.8
+## ✨ What's New in v0.0.9
 
-- ⚠️ **Incomplete reviews are now disclosed** - Final PR comments show a visible caution banner when one or more chunks fail, so reviewers can see partial coverage directly in GitHub
-- 📊 **Chunk merge logging is clearer** - Merge summaries now report successful chunk count and failed chunk count explicitly instead of implying all attempted chunks were merged
-- 🧪 **Partial-failure regression coverage added** - Tests now cover the final merged review body when some chunks fail, including the warning banner path
-- 🔎 **Retry diagnostics are richer** - Timeout and `ECONNRESET` retries now log chunk position, file count, oversized-file count, patch size, prompt size, and elapsed time per failed attempt
+- 🧵 **Inline threading fixed** - The production entry point no longer breaks thread matching through a circular dependency
+- 📦 **Bounded large-PR reviews** - Exclusion patterns, diff budgets, and per-file truncation prevent oversized API requests and disclose omitted coverage
+- 🔁 **Safer API retries** - Permanent client errors fail immediately while transient failures honor bounded retry delays
+- 🔒 **Dependency security update** - Runtime dependencies now pass `npm audit`
+
+<details>
+<summary>Previous: v0.0.8</summary>
+
+- ⚠️ **Incomplete reviews disclosed** - Final comments show a caution when one or more chunks fail
+- 📊 **Clear chunk merge logging** - Logs distinguish successful and failed chunks
+- 🧪 **Partial-failure regression coverage** - Tests cover incomplete merged reviews
+- 🔎 **Richer retry diagnostics** - Logs include chunk context, prompt size, and elapsed time
+
+</details>
 
 <details>
 <summary>Previous: v0.0.7</summary>
@@ -49,7 +59,7 @@ AI-powered GitHub Pull Request code review using Z.ai models. Automatic PR comme
 - ⚡ **GitHub Actions native** - Runs automatically on PR events
 - 💬 **Inline code suggestions** - Posts actionable diff suggestions as GitHub review comments
 - 🔒 **Static security checks** - Scans for hardcoded secrets, eval, dangerous functions, disabled lint
-- 📈 **Feedback learning** - Adapts future suggestions based on accepted/rejected feedback
+- 📄 **Repository preferences** - Can consume an existing `.zai-feedback.json` preference file when the repository is checked out
 
 <details>
 <summary>📦 Advanced Features</summary>
@@ -84,7 +94,6 @@ on:
 permissions:
   issues: write
   pull-requests: write
-  # Add `contents: write` only if you enable ZAI_COMMIT_FEEDBACK.
 
 jobs:
   review:
@@ -92,14 +101,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Code Review
-        uses: bizzkoot/zai-code-review@v0.0.8
+        uses: L-K-M/zai-code-review@v0.0.9
         with:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-4.7' }}
           ZAI_REVIEWER_NAME: ${{ vars.ZAI_REVIEWER_NAME || 'Z.ai Code Review' }}
           ZAI_SYSTEM_PROMPT: ${{ vars.ZAI_SYSTEM_PROMPT || '' }}
+          EXCLUDE_PATTERNS: ${{ vars.EXCLUDE_PATTERNS || '*.lock,package-lock.json,yarn.lock,pnpm-lock.yaml' }}
+          MAX_DIFF_CHARS: ${{ vars.MAX_DIFF_CHARS || '0' }}
           ZAI_THREAD_SIMILARITY_THRESHOLD: ${{ vars.ZAI_THREAD_SIMILARITY_THRESHOLD || '0.6' }}
-          ZAI_COMMIT_FEEDBACK: ${{ vars.ZAI_COMMIT_FEEDBACK || 'false' }}
 ```
 
 ### Step 2: Add your Z.ai API key
@@ -121,7 +131,7 @@ Findings are grouped by severity in collapsible sections:
 ```
 ## Z.ai Code Review
 
-**Actionable comments posted: 3**
+**Actionable suggestions identified: 3**
 
 <details>
 <summary>🔴 Critical/BLOCKER findings (1)</summary><blockquote>
@@ -170,13 +180,11 @@ Built-in static security checks on all diffs:
 
 Security findings now report **accurate file line numbers** using diff hunk headers.
 
-## 🧠 Feedback Learning
+## 🧠 Repository Preferences
 
-The action adapts to your codebase over time:
-
-- **Accepted suggestions** → Increases confidence for similar patterns
-- **Rejected suggestions** → Filters out future similar suggestions
-- Stored in `.zai-feedback.json` (optional)
+If the workflow checks out the repository, the action can consume an existing
+`.zai-feedback.json` file to filter known unwanted suggestions. The action does not infer
+acceptance from GitHub review events or commit this file automatically.
 
 ## 🏗️ How It Works
 
@@ -193,7 +201,7 @@ For small to medium PRs, all changes are sent in a single API request. Larger PR
 4. **Post-Processing** - Parses findings, groups by severity, formats with collapsible sections
 5. **Inline Suggestions** - Extracts and posts actionable code suggestions as GitHub review comments
 6. **Threading** - Checks existing threads and replies instead of creating duplicates
-7. **Feedback Learning** - Adapts suggestions based on prior accepted/rejected feedback
+7. **Repository Preferences** - Applies an existing `.zai-feedback.json` file when available
 8. **Deduplication** - Filters resolved suggestions and prevents duplicate comments
 
 </details>
@@ -214,8 +222,9 @@ For small to medium PRs, all changes are sent in a single API request. Larger PR
 | `ZAI_MODEL` | `glm-4.7` | AI model to use |
 | `ZAI_REVIEWER_NAME` | `Security Bot` | Name in comment header |
 | `ZAI_THREAD_SIMILARITY_THRESHOLD` | `0.7` | Thread matching strictness (higher = stricter) |
-| `ZAI_COMMIT_FEEDBACK` | `true` | Enable feedback learning commits (requires `contents: write`) |
 | `ZAI_SYSTEM_PROMPT` | `You are an expert...` | Custom system prompt |
+| `EXCLUDE_PATTERNS` | `*.lock,dist/**` | Comma-separated file patterns to omit |
+| `MAX_DIFF_CHARS` | `200000` | Optional total diff budget; `0` is unlimited |
 
 **Benefits:** Customize without editing workflow, change settings without committing, same workflow across environments.
 
@@ -235,12 +244,10 @@ For multi-repository setups, configure at the organization level to apply settin
 - **Higher values** (e.g., `0.8`): More strict, creates new threads more often
 - **Lower values** (e.g., `0.4`): More permissive, replies to existing threads more often
 
-#### Feedback Learning
+#### Repository Preferences
 
-- **Default:** `false` (disabled)
-- **Enable:** Set `ZAI_COMMIT_FEEDBACK: 'true'`
-- **Permissions:** Add `contents: write` to the workflow `permissions:` block when enabled
-- Stores feedback in `.zai-feedback.json` to adapt future suggestions
+- Add `actions/checkout` before this action if you maintain `.zai-feedback.json` or `.zai-review.yaml`
+- `ZAI_COMMIT_FEEDBACK` is retained as a deprecated compatibility input and has no effect
 
 #### System Prompt
 
@@ -281,7 +288,7 @@ Chunk 3/3 → Z.ai API → Review part 3
 The action prevents duplicate comments through:
 
 1. **Cross-chunk deduplication** - Same file:line:body posted only once
-2. **Content hashing** - Similar suggestions filtered
+2. **Location-aware matching** - Repeated fixes at different locations remain actionable
 3. **Thread detection** - Replies to existing threads instead of creating duplicates
 4. **Resolved filtering** - Skips suggestions where thread is already resolved
 
