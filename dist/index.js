@@ -102,18 +102,56 @@ async function getChangedFiles(octokit, owner, repo, pullNumber) {
   const files = [];
   let page = 1;
   while (true) {
-    const { data } = await octokit.rest.pulls.listFiles({
+    const { data, headers } = await octokit.rest.pulls.listFiles({
       owner,
       repo,
       pull_number: pullNumber,
       per_page: PER_PAGE,
+      limit: PER_PAGE,
       page,
     });
     files.push(...data);
-    if (data.length < PER_PAGE) break;
+    const hasNextPage = /<[^>]+>;\s*rel="?next"?/i.test(headers?.link || '');
+    if (!hasNextPage && data.length < PER_PAGE) break;
     page++;
   }
-  return files;
+
+  if (files.length === 0 || files.some(file => Object.hasOwn(file, 'patch'))) {
+    return files;
+  }
+
+  try {
+    const { data } = await octokit.request(
+      'GET /repos/{owner}/{repo}/pulls/{pull_number}.diff',
+      { owner, repo, pull_number: pullNumber }
+    );
+    return hydratePatchesFromUnifiedDiff(files, data);
+  } catch (err) {
+    core.warning(`Could not fetch the pull request diff: ${err.message}`);
+    return files;
+  }
+}
+
+function hydratePatchesFromUnifiedDiff(files, diff) {
+  if (typeof diff !== 'string' || !diff.startsWith('diff --git ')) {
+    return files;
+  }
+
+  const sections = diff
+    .split(/^diff --git /m)
+    .slice(1)
+    .map(section => `diff --git ${section}`);
+
+  // File metadata and diff sections use the same git-diff order. Refuse to
+  // associate them when the provider returns an unexpected representation.
+  if (sections.length !== files.length) {
+    return files;
+  }
+
+  return files.map((file, index) => {
+    const hunk = sections[index].match(/^@@[^\n]*(?:\n|$)/m);
+    return hunk ? { ...file, patch: sections[index].slice(hunk.index).trimEnd() } : file;
+  });
 }
 
 function splitIntoChunks(files) {
@@ -894,6 +932,8 @@ if (__nccwpck_require__.c[__nccwpck_require__.s] === module) {
 }
 
 module.exports = {
+  getChangedFiles,
+  hydratePatchesFromUnifiedDiff,
   splitIntoChunks,
   matchesPattern,
   filterFiles,

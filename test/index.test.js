@@ -1,4 +1,6 @@
 const {
+  getChangedFiles,
+  hydratePatchesFromUnifiedDiff,
   splitIntoChunks,
   buildChunkPrompt,
   buildCombinedReview,
@@ -18,6 +20,90 @@ const {
 } = require('../src/index');
 
 const ConversationalFeedback = require('../src/review/ConversationalFeedback');
+
+describe('getChangedFiles', () => {
+  test('hydrates Forgejo file metadata from the unified pull request diff', async () => {
+    const files = [
+      { filename: 'src/a.js', status: 'modified' },
+      { filename: 'image.png', status: 'added' },
+    ];
+    const diff = [
+      'diff --git a/src/a.js b/src/a.js',
+      'index 1111111..2222222 100644',
+      '--- a/src/a.js',
+      '+++ b/src/a.js',
+      '@@ -1 +1 @@',
+      '-const value = 1;',
+      '+const value = 2;',
+      'diff --git a/image.png b/image.png',
+      'new file mode 100644',
+      'index 0000000..3333333',
+      'Binary files /dev/null and b/image.png differ',
+    ].join('\n');
+    const octokit = {
+      rest: {
+        pulls: {
+          listFiles: jest.fn().mockResolvedValue({ data: files, headers: {} }),
+        },
+      },
+      request: jest.fn().mockResolvedValue({ data: diff }),
+    };
+
+    const result = await getChangedFiles(octokit, 'owner', 'repo', 12);
+
+    expect(octokit.rest.pulls.listFiles).toHaveBeenCalledWith(expect.objectContaining({
+      per_page: 100,
+      limit: 100,
+      page: 1,
+    }));
+    expect(octokit.request).toHaveBeenCalledWith(
+      'GET /repos/{owner}/{repo}/pulls/{pull_number}.diff',
+      { owner: 'owner', repo: 'repo', pull_number: 12 }
+    );
+    expect(result[0].patch).toBe([
+      '@@ -1 +1 @@',
+      '-const value = 1;',
+      '+const value = 2;',
+    ].join('\n'));
+    expect(result[1].patch).toBeUndefined();
+  });
+
+  test('uses Link pagination and keeps native GitHub patches', async () => {
+    const firstPage = [{ filename: 'src/a.js', patch: '@@ -1 +1 @@\n-a\n+b' }];
+    const secondPage = [{ filename: 'src/b.js', patch: '@@ -1 +1 @@\n-c\n+d' }];
+    const octokit = {
+      rest: {
+        pulls: {
+          listFiles: jest.fn()
+            .mockResolvedValueOnce({
+              data: firstPage,
+              headers: { link: '<https://example.test?page=2>; rel="next"' },
+            })
+            .mockResolvedValueOnce({ data: secondPage, headers: {} }),
+        },
+      },
+      request: jest.fn(),
+    };
+
+    const result = await getChangedFiles(octokit, 'owner', 'repo', 12);
+
+    expect(result).toEqual([...firstPage, ...secondPage]);
+    expect(octokit.rest.pulls.listFiles).toHaveBeenLastCalledWith(expect.objectContaining({
+      page: 2,
+    }));
+    expect(octokit.request).not.toHaveBeenCalled();
+  });
+
+  test('does not associate diff sections when the file counts differ', () => {
+    const files = [
+      { filename: 'src/a.js' },
+      { filename: 'src/b.js' },
+    ];
+    const diff = 'diff --git a/src/a.js b/src/a.js\n@@ -1 +1 @@\n-a\n+b\n';
+
+    expect(hydratePatchesFromUnifiedDiff(files, diff)).toBe(files);
+  });
+});
 
 describe('splitIntoChunks', () => {
   test('returns empty array for files without patches', () => {
