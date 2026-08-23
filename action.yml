@@ -24,6 +24,10 @@ inputs:
     description: "Maximum total diff characters sent to the API (0 = unlimited)"
     required: false
     default: "0"
+  REQUEST_TIMEOUT_MS:
+    description: "Per-attempt timeout for one Z.ai request, in milliseconds (default 300000). Raise it for large diffs: the request is not streamed, so nothing arrives until the whole review is ready."
+    required: false
+    default: "300000"
   ZAI_THREAD_SIMILARITY_THRESHOLD:
     description: "Similarity threshold (0-1) for matching existing comment threads (default: 0.6)"
     required: false

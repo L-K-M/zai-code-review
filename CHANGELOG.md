@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.10] - 2026-08-23
+
+### Added
+- `REQUEST_TIMEOUT_MS` input for the per-attempt request timeout, defaulting to the previous hardcoded 300000
+
+### Fixed
+- Reviews of larger diffs no longer fail outright: the 300s ceiling was too tight for the API even on small work, and because the request is not streamed a crossed deadline discarded the whole completion and restarted each retry from zero
+
 ## [0.0.9] - 2026-07-12
 
 ### Added
