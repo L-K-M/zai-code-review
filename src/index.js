@@ -23,7 +23,12 @@ const COMMENT_MARKER = '<!-- zai-code-review -->';
 const ERR_PREFIX = 'Z.ai API: ';
 const MAX_RESPONSE_SIZE = 1024 * 1024;
 const MAX_COMMENT_SIZE = 65000;
-const REQUEST_TIMEOUT_MS = 300_000;
+// Per-attempt ceiling for one Z.ai request. Configurable because it is
+// workload-dependent, not universal: a review that finishes comfortably on a
+// small diff can sit well past five minutes on a large one, and the request is
+// not streamed — nothing arrives until the whole completion is ready, so a
+// too-tight ceiling turns a slow-but-working review into a hard failure.
+const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
 const PER_PAGE = 100;
 const MAX_CHUNK_SIZE = 50000;
 const MAX_LISTED_FILES = 20;
@@ -431,7 +436,16 @@ function mapSecuritySeverityToReviewSeverity(severity) {
   }
 }
 
-function callZaiApi(apiKey, model, systemPrompt, prompt) {
+/// Validates the REQUEST_TIMEOUT_MS input. Anything non-numeric, zero or
+/// negative falls back to the default rather than disabling the timeout: a
+/// request with no ceiling at all would hang the job until the runner kills it,
+/// which is a worse failure than a slow review.
+function parseRequestTimeoutMs(raw, fallback = DEFAULT_REQUEST_TIMEOUT_MS) {
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function callZaiApi(apiKey, model, systemPrompt, prompt, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
       model,
@@ -492,7 +506,7 @@ function callZaiApi(apiKey, model, systemPrompt, prompt) {
     });
 
     req.on('error', reject);
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+    req.setTimeout(requestTimeoutMs, () => {
       req.destroy(new Error(`${ERR_PREFIX}Request timed out.`));
     });
     req.write(body);
@@ -522,13 +536,14 @@ function isRetryableError(error) {
     || error.statusCode >= 500;
 }
 
-async function callZaiApiWithRetry(apiKey, model, systemPrompt, prompt, requestLabel = 'request') {
+async function callZaiApiWithRetry(apiKey, model, systemPrompt, prompt, requestLabel = 'request',
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
   let lastError;
 
   for (let attempt = 0; attempt < RETRY_CONFIG.maxRetries; attempt++) {
     const attemptStartedAt = Date.now();
     try {
-      return await callZaiApi(apiKey, model, systemPrompt, prompt);
+      return await callZaiApi(apiKey, model, systemPrompt, prompt, requestTimeoutMs);
     } catch (err) {
       lastError = err;
       const elapsedMs = Date.now() - attemptStartedAt;
@@ -717,6 +732,7 @@ async function run() {
   const maxDiffChars = Number.isInteger(parsedMaxDiffChars) && parsedMaxDiffChars >= 0
     ? parsedMaxDiffChars
     : 0;
+  const requestTimeoutMs = parseRequestTimeoutMs(core.getInput('REQUEST_TIMEOUT_MS'));
   const token = core.getInput('GITHUB_TOKEN');
   core.setSecret(token);
   let threadSimilarityThreshold = parseFloat(core.getInput('ZAI_THREAD_SIMILARITY_THRESHOLD'));
@@ -828,7 +844,8 @@ async function run() {
         patchChars: chunks[i].reduce((total, file) => total + (file.patch?.length || 0), 0),
         promptChars: prompt.length,
       });
-      const rawReview = await callZaiApiWithRetry(apiKey, model, systemPrompt, prompt, requestLabel);
+      const rawReview = await callZaiApiWithRetry(apiKey, model, systemPrompt, prompt, requestLabel,
+        requestTimeoutMs);
       const review = ConversationalFeedback.postProcess(rawReview);
       // Prepend actionable security findings for this chunk
       const chunkFindings = SecurityCheck.checkSecurity(chunks[i], customPatterns);
@@ -950,4 +967,6 @@ module.exports = {
   isRetryableError,
   hashString,
   RETRY_CONFIG,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  parseRequestTimeoutMs,
 };

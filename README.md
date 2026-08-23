@@ -225,6 +225,7 @@ For small to medium PRs, all changes are sent in a single API request. Larger PR
 | `ZAI_SYSTEM_PROMPT` | `You are an expert...` | Custom system prompt |
 | `EXCLUDE_PATTERNS` | `*.lock,dist/**` | Comma-separated file patterns to omit |
 | `MAX_DIFF_CHARS` | `200000` | Optional total diff budget; `0` is unlimited |
+| `REQUEST_TIMEOUT_MS` | `300000` | Per-attempt request timeout in ms. The API is not streamed, so a large diff can legitimately need longer than the default |
 
 **Benefits:** Customize without editing workflow, change settings without committing, same workflow across environments.
 

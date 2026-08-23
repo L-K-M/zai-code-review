@@ -17,6 +17,8 @@ const {
   isRetryableError,
   hashString,
   RETRY_CONFIG,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  parseRequestTimeoutMs,
 } = require('../src/index');
 
 const ConversationalFeedback = require('../src/review/ConversationalFeedback');
@@ -231,6 +233,30 @@ describe('RETRY_CONFIG', () => {
     expect(RETRY_CONFIG.maxRetries).toBeGreaterThan(0);
     expect(RETRY_CONFIG.baseDelayMs).toBeGreaterThan(0);
     expect(RETRY_CONFIG.maxDelayMs).toBeGreaterThanOrEqual(RETRY_CONFIG.baseDelayMs);
+  });
+});
+
+describe('parseRequestTimeoutMs', () => {
+  test('accepts a positive integer', () => {
+    expect(parseRequestTimeoutMs('600000')).toBe(600000);
+  });
+
+  test('falls back when the value is missing or not a number', () => {
+    expect(parseRequestTimeoutMs('')).toBe(DEFAULT_REQUEST_TIMEOUT_MS);
+    expect(parseRequestTimeoutMs('soon')).toBe(DEFAULT_REQUEST_TIMEOUT_MS);
+    expect(parseRequestTimeoutMs(undefined)).toBe(DEFAULT_REQUEST_TIMEOUT_MS);
+  });
+
+  test('refuses zero and negatives rather than disabling the timeout', () => {
+    // "0 = unlimited" would be the intuitive reading, but an unbounded request
+    // hangs the job until the runner kills it — a worse failure than a slow
+    // review, and one with no error message attached.
+    expect(parseRequestTimeoutMs('0')).toBe(DEFAULT_REQUEST_TIMEOUT_MS);
+    expect(parseRequestTimeoutMs('-1')).toBe(DEFAULT_REQUEST_TIMEOUT_MS);
+  });
+
+  test('honours an explicit fallback', () => {
+    expect(parseRequestTimeoutMs('nope', 900000)).toBe(900000);
   });
 });
 
