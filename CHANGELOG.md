@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.11] - 2026-08-25
+
+### Changed
+- The default output budget increased from 16,384 to 32,768 tokens for high-reasoning reviews
+- Timeout fallback now recursively splits requests down to 4K patch characters when necessary
+
+### Fixed
+- Streams that consume the output budget before producing visible review content are identified as output-limit failures instead of generic empty responses
+- Output-limit failures trigger smaller adaptive requests rather than repeating the same request three times
+- Truncated visible answers are rejected and retried at smaller scope instead of being posted as complete reviews
+
 ## [0.0.10] - 2026-08-25
 
 ### Added
@@ -234,3 +245,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.0.9]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.9
 
 [0.0.10]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.10
+
+[0.0.11]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.11

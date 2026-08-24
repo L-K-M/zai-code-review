@@ -2,15 +2,24 @@
 
 AI-powered GitHub Pull Request code review using Z.ai models. Automatic PR comments, bug detection, improvement suggestions, and security checks via GitHub Actions.
 
-**Latest version: v0.0.10**
+**Latest version: v0.0.11**
 
-## ✨ What's New in v0.0.10
+## ✨ What's New in v0.0.11
+
+- 🧠 **High-reasoning output headroom** - The default output budget increased to 32K tokens after production runs exhausted 16K before producing a visible review
+- 📦 **Recursive adaptive recovery** - Requests that hit the output limit or inactivity timeout are split repeatedly into smaller sections instead of repeating the same doomed request
+- 🔎 **Explicit limit diagnostics** - Logs now distinguish output-budget exhaustion from genuinely empty responses
+
+<details>
+<summary>Previous: v0.0.10</summary>
 
 - 🌊 **Streaming reviews** - Reasoning and answer tokens keep long GLM requests active instead of waiting for one large response
 - 🧠 **Explicit reasoning controls** - Supported models default to high reasoning effort with a bounded output budget
 - ⏱️ **Longer inactivity timeout** - Requests allow 15 minutes without response bytes, configurable up to one hour
 - 📦 **Smaller lossless chunks** - Requests default to 25K patch characters; oversized file patches are split without omission
 - 🔁 **Adaptive recovery** - Timed-out chunks are retried as smaller sections with longer, jittered backoff
+
+</details>
 
 <details>
 <summary>Previous: v0.0.9</summary>
@@ -112,12 +121,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Code Review
-        uses: L-K-M/zai-code-review@v0.0.10
+        uses: L-K-M/zai-code-review@v0.0.11
         with:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-5.3' }}
           ZAI_REASONING_EFFORT: ${{ vars.ZAI_REASONING_EFFORT || 'high' }}
-          ZAI_MAX_OUTPUT_TOKENS: ${{ vars.ZAI_MAX_OUTPUT_TOKENS || '16384' }}
+          ZAI_MAX_OUTPUT_TOKENS: ${{ vars.ZAI_MAX_OUTPUT_TOKENS || '32768' }}
           ZAI_REQUEST_TIMEOUT_SECONDS: ${{ vars.ZAI_REQUEST_TIMEOUT_SECONDS || '900' }}
           ZAI_REVIEWER_NAME: ${{ vars.ZAI_REVIEWER_NAME || 'Z.ai Code Review' }}
           ZAI_SYSTEM_PROMPT: ${{ vars.ZAI_SYSTEM_PROMPT || '' }}
@@ -236,7 +245,7 @@ For small PRs, all changes are sent in a single streaming API request. Larger PR
 |----------|---------|-------------|
 | `ZAI_MODEL` | `glm-5.3` | AI model to use |
 | `ZAI_REASONING_EFFORT` | `high` | Reasoning effort for supported models: `low`, `high`, or `max` |
-| `ZAI_MAX_OUTPUT_TOKENS` | `16384` | Maximum output tokens per request |
+| `ZAI_MAX_OUTPUT_TOKENS` | `32768` | Maximum output tokens per request |
 | `ZAI_REQUEST_TIMEOUT_SECONDS` | `900` | Inactivity timeout between response bytes; range 60–3600 seconds |
 | `ZAI_REVIEWER_NAME` | `Security Bot` | Name in comment header |
 | `ZAI_THREAD_SIMILARITY_THRESHOLD` | `0.7` | Thread matching strictness (higher = stricter) |

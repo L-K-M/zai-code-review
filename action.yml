@@ -15,7 +15,7 @@ inputs:
   ZAI_MAX_OUTPUT_TOKENS:
     description: "Maximum model output tokens per review request"
     required: false
-    default: "16384"
+    default: "32768"
   ZAI_REQUEST_TIMEOUT_SECONDS:
     description: "Maximum inactivity between response bytes before a request is timed out"
     required: false

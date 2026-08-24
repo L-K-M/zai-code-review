@@ -16,12 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Code Review
-        uses: L-K-M/zai-code-review@v0.0.10
+        uses: L-K-M/zai-code-review@v0.0.11
         with:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-5.3' }}
           ZAI_REASONING_EFFORT: ${{ vars.ZAI_REASONING_EFFORT || 'high' }}
-          ZAI_MAX_OUTPUT_TOKENS: ${{ vars.ZAI_MAX_OUTPUT_TOKENS || '16384' }}
+          ZAI_MAX_OUTPUT_TOKENS: ${{ vars.ZAI_MAX_OUTPUT_TOKENS || '32768' }}
           ZAI_REQUEST_TIMEOUT_SECONDS: ${{ vars.ZAI_REQUEST_TIMEOUT_SECONDS || '900' }}
           ZAI_SYSTEM_PROMPT: ${{ vars.ZAI_SYSTEM_PROMPT || '' }}
           ZAI_REVIEWER_NAME: ${{ vars.ZAI_REVIEWER_NAME || 'Z.ai Code Review' }}

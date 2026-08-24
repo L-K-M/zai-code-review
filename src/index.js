@@ -24,7 +24,7 @@ const ERR_PREFIX = 'Z.ai API: ';
 const MAX_RESPONSE_SIZE = 1024 * 1024;
 const MAX_COMMENT_SIZE = 65000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
-const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
+const DEFAULT_MAX_OUTPUT_TOKENS = 32768;
 const DEFAULT_REASONING_EFFORT = 'high';
 const PER_PAGE = 100;
 const DEFAULT_MAX_CHUNK_SIZE = 25000;
@@ -526,6 +526,25 @@ function parseSseEventData(event) {
   };
 }
 
+function getStreamCompletionError({ sawDone, finishReason, content, completionSummary }) {
+  if (!sawDone) {
+    const error = new Error(`${ERR_PREFIX}Streaming response ended before completion.`);
+    error.code = 'ZAI_STREAM_INCOMPLETE';
+    return error;
+  }
+  if (finishReason === 'length') {
+    const error = new Error(
+      `${ERR_PREFIX}Output token limit reached before the review completed (${completionSummary}).`
+    );
+    error.code = 'ZAI_OUTPUT_LIMIT';
+    return error;
+  }
+  if (!content) {
+    return new Error(`${ERR_PREFIX}Empty response body (${completionSummary}).`);
+  }
+  return null;
+}
+
 function callZaiApi(apiKey, model, systemPrompt, prompt, apiOptions = {}) {
   return new Promise((resolve, reject) => {
     const requestStartedAt = Date.now();
@@ -552,6 +571,7 @@ function callZaiApi(apiKey, model, systemPrompt, prompt, apiOptions = {}) {
       let sawDone = false;
       let finishReason = '';
       let usage;
+      let reasoningChars = 0;
       let firstTokenAt;
       const requestId = res.headers['x-request-id'] || res.headers['x-zai-request-id'] || '';
 
@@ -579,6 +599,7 @@ function callZaiApi(apiKey, model, systemPrompt, prompt, apiOptions = {}) {
             return;
           }
           streamedContent += parsed.content;
+          reasoningChars += parsed.reasoningContent.length;
           sawDone ||= parsed.done;
           finishReason = parsed.finishReason || finishReason;
           usage = parsed.usage || usage;
@@ -602,27 +623,24 @@ function callZaiApi(apiKey, model, systemPrompt, prompt, apiOptions = {}) {
         }
 
         if (streaming) {
-          if (!sawDone) {
-            const error = new Error(`${ERR_PREFIX}Streaming response ended before completion.`);
-            error.code = 'ZAI_STREAM_INCOMPLETE';
-            reject(error);
-            return;
-          }
-          if (!streamedContent) {
-            reject(new Error(`${ERR_PREFIX}Empty response body.`));
-            return;
-          }
-          if (finishReason === 'length') {
-            core?.warning('Z.ai response reached ZAI_MAX_OUTPUT_TOKENS and may be incomplete.');
-          }
           const requestIdLabel = requestId ? `, request ${requestId}` : '';
           const firstTokenLabel = firstTokenAt
             ? `, first token in ${firstTokenAt - requestStartedAt}ms`
             : '';
           const usageLabel = usage?.total_tokens ? `, ${usage.total_tokens} total tokens` : '';
-          core?.info(
-            `Z.ai stream completed in ${Date.now() - requestStartedAt}ms${firstTokenLabel}${usageLabel}${requestIdLabel}.`
-          );
+          const finishLabel = finishReason ? `, finish ${finishReason}` : ', finish unknown';
+          const completionSummary = `in ${Date.now() - requestStartedAt}ms${firstTokenLabel}, ${reasoningChars} reasoning chars, ${streamedContent.length} review chars${finishLabel}${usageLabel}${requestIdLabel}`;
+          const completionError = getStreamCompletionError({
+            sawDone,
+            finishReason,
+            content: streamedContent,
+            completionSummary,
+          });
+          if (completionError) {
+            reject(completionError);
+            return;
+          }
+          core?.info(`Z.ai stream completed ${completionSummary}.`);
           resolve(streamedContent);
           return;
         }
@@ -684,6 +702,10 @@ function isRetryableError(error) {
 
 function isRequestTimeoutError(error) {
   return error?.code === 'ZAI_REQUEST_TIMEOUT';
+}
+
+function isOutputLimitError(error) {
+  return error?.code === 'ZAI_OUTPUT_LIMIT';
 }
 
 function calculateRetryDelay(error, attempt, random = Math.random) {
@@ -784,9 +806,13 @@ async function reviewChunkWithAdaptiveSplit({
   totalChunks,
   maxChunkSize,
   apiOptions,
+  fallbackPath = '',
 }) {
   const prompt = ConversationalFeedback.buildPrompt(files, chunkIndex, totalChunks);
-  const requestLabel = buildRequestLabel(files, chunkIndex, totalChunks);
+  const baseRequestLabel = buildRequestLabel(files, chunkIndex, totalChunks);
+  const requestLabel = fallbackPath
+    ? `${baseRequestLabel}, fallback ${fallbackPath}`
+    : baseRequestLabel;
 
   try {
     return await callZaiApiWithRetry(
@@ -799,7 +825,7 @@ async function reviewChunkWithAdaptiveSplit({
       { maxAttempts: 1 }
     );
   } catch (err) {
-    if (isRequestTimeoutError(err)) {
+    if (isRequestTimeoutError(err) || isOutputLimitError(err)) {
       const fallbackSize = Math.max(
         MIN_FALLBACK_CHUNK_SIZE,
         Math.floor(maxChunkSize / 2)
@@ -807,27 +833,26 @@ async function reviewChunkWithAdaptiveSplit({
       const fallbackChunks = splitIntoChunks(files, fallbackSize);
 
       if (fallbackChunks.length > 1) {
+        const reason = isOutputLimitError(err) ? 'reached the output token limit' : 'timed out';
         core?.warning(
-          `${requestLabel} timed out; retrying as ${fallbackChunks.length} smaller section(s) of at most ${fallbackSize} patch characters.`
+          `${requestLabel} ${reason}; retrying as ${fallbackChunks.length} smaller section(s) of at most ${fallbackSize} patch characters.`
         );
         const fallbackReviews = [];
         for (let index = 0; index < fallbackChunks.length; index++) {
-          const fallbackFiles = fallbackChunks[index];
-          const fallbackPrompt = ConversationalFeedback.buildPrompt(
-            fallbackFiles,
-            chunkIndex,
-            totalChunks
-          );
-          const fallbackLabel = `${buildRequestLabel(fallbackFiles, chunkIndex, totalChunks)}, fallback ${index + 1}/${fallbackChunks.length}`;
-          fallbackReviews.push(await callZaiApiWithRetry(
+          const childPath = fallbackPath
+            ? `${fallbackPath}.${index + 1}/${fallbackChunks.length}`
+            : `${index + 1}/${fallbackChunks.length}`;
+          fallbackReviews.push(await reviewChunkWithAdaptiveSplit({
             apiKey,
             model,
             systemPrompt,
-            fallbackPrompt,
-            fallbackLabel,
+            files: fallbackChunks[index],
+            chunkIndex,
+            totalChunks,
+            maxChunkSize: fallbackSize,
             apiOptions,
-            { maxAttempts: 2 }
-          ));
+            fallbackPath: childPath,
+          }));
         }
         return fallbackReviews.join('\n\n');
       }
@@ -1289,9 +1314,11 @@ module.exports = {
   callZaiApiWithRetry,
   buildZaiRequestBody,
   parseSseEventData,
+  getStreamCompletionError,
   parseRetryAfter,
   isRetryableError,
   isRequestTimeoutError,
+  isOutputLimitError,
   calculateRetryDelay,
   normalizeReasoningEffort,
   hashString,

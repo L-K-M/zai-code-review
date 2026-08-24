@@ -16,8 +16,10 @@ const {
   buildCommentBody,
   buildZaiRequestBody,
   parseSseEventData,
+  getStreamCompletionError,
   isRetryableError,
   isRequestTimeoutError,
+  isOutputLimitError,
   calculateRetryDelay,
   normalizeReasoningEffort,
   hashString,
@@ -605,12 +607,12 @@ describe('Z.ai request configuration', () => {
   test('uses streaming, bounded output, and high reasoning for GLM 5.3', () => {
     const body = buildZaiRequestBody('glm-5.3', 'system', 'prompt', {
       reasoningEffort: 'high',
-      maxOutputTokens: 16384,
+      maxOutputTokens: 32768,
     });
 
     expect(body.stream).toBe(true);
     expect(body.reasoning_effort).toBe('high');
-    expect(body.max_tokens).toBe(16384);
+    expect(body.max_tokens).toBe(32768);
   });
 
   test('does not send unsupported reasoning effort to older models', () => {
@@ -630,6 +632,33 @@ describe('Z.ai request configuration', () => {
     expect(parseSseEventData('data: [DONE]')).toEqual({ content: '', done: true });
   });
 
+  test('classifies output-limit streams even when visible content exists', () => {
+    const error = getStreamCompletionError({
+      sawDone: true,
+      finishReason: 'length',
+      content: 'partial review',
+      completionSummary: 'in 1000ms',
+    });
+
+    expect(error.code).toBe('ZAI_OUTPUT_LIMIT');
+    expect(error.message).toContain('Output token limit reached');
+  });
+
+  test('accepts only completed non-empty streams', () => {
+    expect(getStreamCompletionError({
+      sawDone: true,
+      finishReason: 'stop',
+      content: 'complete review',
+      completionSummary: 'in 1000ms',
+    })).toBeNull();
+    expect(getStreamCompletionError({
+      sawDone: false,
+      finishReason: '',
+      content: 'partial review',
+      completionSummary: 'in 1000ms',
+    }).code).toBe('ZAI_STREAM_INCOMPLETE');
+  });
+
   test('validates reasoning effort', () => {
     expect(normalizeReasoningEffort('HIGH')).toBe('high');
     expect(normalizeReasoningEffort('max')).toBe('max');
@@ -647,6 +676,7 @@ describe('retry classification', () => {
 
   test('recognizes inactivity timeouts and uses longer jittered backoff', () => {
     expect(isRequestTimeoutError({ code: 'ZAI_REQUEST_TIMEOUT' })).toBe(true);
+    expect(isOutputLimitError({ code: 'ZAI_OUTPUT_LIMIT' })).toBe(true);
     expect(calculateRetryDelay({}, 0, () => 0)).toBe(15000);
     expect(calculateRetryDelay({}, 1, () => 0)).toBe(45000);
   });
