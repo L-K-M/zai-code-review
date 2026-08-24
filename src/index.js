@@ -499,10 +499,10 @@ function parseSseEventData(event) {
     .join('\n');
 
   if (!payload) {
-    return { content: '', done: false };
+    return { content: '', reasoningContent: '', finishReason: '', done: false };
   }
   if (payload.trim() === '[DONE]') {
-    return { content: '', done: true };
+    return { content: '', reasoningContent: '', finishReason: '', done: true };
   }
 
   let parsed;
@@ -599,7 +599,7 @@ function callZaiApi(apiKey, model, systemPrompt, prompt, apiOptions = {}) {
             return;
           }
           streamedContent += parsed.content;
-          reasoningChars += parsed.reasoningContent.length;
+          reasoningChars += (parsed.reasoningContent || '').length;
           sawDone ||= parsed.done;
           finishReason = parsed.finishReason || finishReason;
           usage = parsed.usage || usage;

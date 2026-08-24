@@ -629,7 +629,12 @@ describe('Z.ai request configuration', () => {
     expect(parseSseEventData('data: {"choices":[{"delta":{"content":"review"},"finish_reason":"stop"}]}')).toEqual(
       expect.objectContaining({ content: 'review', finishReason: 'stop', done: false })
     );
-    expect(parseSseEventData('data: [DONE]')).toEqual({ content: '', done: true });
+    expect(parseSseEventData('data: [DONE]')).toEqual({
+      content: '',
+      reasoningContent: '',
+      finishReason: '',
+      done: true,
+    });
   });
 
   test('classifies output-limit streams even when visible content exists', () => {

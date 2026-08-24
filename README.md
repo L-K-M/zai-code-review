@@ -2,13 +2,20 @@
 
 AI-powered GitHub Pull Request code review using Z.ai models. Automatic PR comments, bug detection, improvement suggestions, and security checks via GitHub Actions.
 
-**Latest version: v0.0.11**
+**Latest version: v0.0.12**
 
-## ✨ What's New in v0.0.11
+## ✨ What's New in v0.0.12
+
+- 🛡️ **Safe stream completion** - The terminal `[DONE]` event now has the same normalized shape as token events, preventing a completion-time crash
+
+<details>
+<summary>Previous: v0.0.11</summary>
 
 - 🧠 **High-reasoning output headroom** - The default output budget increased to 32K tokens after production runs exhausted 16K before producing a visible review
 - 📦 **Recursive adaptive recovery** - Requests that hit the output limit or inactivity timeout are split repeatedly into smaller sections instead of repeating the same doomed request
 - 🔎 **Explicit limit diagnostics** - Logs now distinguish output-budget exhaustion from genuinely empty responses
+
+</details>
 
 <details>
 <summary>Previous: v0.0.10</summary>
@@ -121,7 +128,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Code Review
-        uses: L-K-M/zai-code-review@v0.0.11
+        uses: L-K-M/zai-code-review@v0.0.12
         with:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-5.3' }}
