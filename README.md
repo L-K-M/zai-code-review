@@ -2,14 +2,25 @@
 
 AI-powered GitHub Pull Request code review using Z.ai models. Automatic PR comments, bug detection, improvement suggestions, and security checks via GitHub Actions.
 
-**Latest version: v0.0.9**
+**Latest version: v0.0.10**
 
-## ✨ What's New in v0.0.9
+## ✨ What's New in v0.0.10
+
+- 🌊 **Streaming reviews** - Reasoning and answer tokens keep long GLM requests active instead of waiting for one large response
+- 🧠 **Explicit reasoning controls** - Supported models default to high reasoning effort with a bounded output budget
+- ⏱️ **Longer inactivity timeout** - Requests allow 15 minutes without response bytes, configurable up to one hour
+- 📦 **Smaller lossless chunks** - Requests default to 25K patch characters; oversized file patches are split without omission
+- 🔁 **Adaptive recovery** - Timed-out chunks are retried as smaller sections with longer, jittered backoff
+
+<details>
+<summary>Previous: v0.0.9</summary>
 
 - 🧵 **Inline threading fixed** - The production entry point no longer breaks thread matching through a circular dependency
-- 📦 **Bounded large-PR reviews** - Exclusion patterns, diff budgets, and per-file truncation prevent oversized API requests and disclose omitted coverage
-- 🔁 **Safer API retries** - Permanent client errors fail immediately while transient failures honor bounded retry delays
-- 🔒 **Dependency security update** - Runtime dependencies now pass `npm audit`
+- 📦 **Bounded large-PR reviews** - Exclusion patterns and diff budgets prevent oversized API requests and disclose omitted coverage
+- 🔁 **Safer API retries** - Permanent client errors fail immediately while transient failures honor bounded `Retry-After` delays
+- 🔒 **Dependency security update** - Runtime dependencies were updated to remove known production vulnerabilities
+
+</details>
 
 <details>
 <summary>Previous: v0.0.8</summary>
@@ -101,14 +112,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Code Review
-        uses: L-K-M/zai-code-review@v0.0.9
+        uses: L-K-M/zai-code-review@v0.0.10
         with:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
-          ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-4.7' }}
+          ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-5.3' }}
+          ZAI_REASONING_EFFORT: ${{ vars.ZAI_REASONING_EFFORT || 'high' }}
+          ZAI_MAX_OUTPUT_TOKENS: ${{ vars.ZAI_MAX_OUTPUT_TOKENS || '16384' }}
+          ZAI_REQUEST_TIMEOUT_SECONDS: ${{ vars.ZAI_REQUEST_TIMEOUT_SECONDS || '900' }}
           ZAI_REVIEWER_NAME: ${{ vars.ZAI_REVIEWER_NAME || 'Z.ai Code Review' }}
           ZAI_SYSTEM_PROMPT: ${{ vars.ZAI_SYSTEM_PROMPT || '' }}
           EXCLUDE_PATTERNS: ${{ vars.EXCLUDE_PATTERNS || '*.lock,package-lock.json,yarn.lock,pnpm-lock.yaml' }}
           MAX_DIFF_CHARS: ${{ vars.MAX_DIFF_CHARS || '0' }}
+          MAX_CHUNK_CHARS: ${{ vars.MAX_CHUNK_CHARS || '25000' }}
           ZAI_THREAD_SIMILARITY_THRESHOLD: ${{ vars.ZAI_THREAD_SIMILARITY_THRESHOLD || '0.6' }}
 ```
 
@@ -191,7 +206,7 @@ acceptance from GitHub review events or commit this file automatically.
 <details>
 <summary>Architecture & Processing Pipeline</summary>
 
-For small to medium PRs, all changes are sent in a single API request. Larger PRs are automatically split into chunks (50K characters each).
+For small PRs, all changes are sent in a single streaming API request. Larger PRs are split into lossless 25K-character sections by default. If a request still times out, the action retries it as smaller sections.
 
 **Processing Pipeline:**
 
@@ -219,12 +234,16 @@ For small to medium PRs, all changes are sent in a single API request. Larger PR
 
 | Variable | Example | Description |
 |----------|---------|-------------|
-| `ZAI_MODEL` | `glm-4.7` | AI model to use |
+| `ZAI_MODEL` | `glm-5.3` | AI model to use |
+| `ZAI_REASONING_EFFORT` | `high` | Reasoning effort for supported models: `low`, `high`, or `max` |
+| `ZAI_MAX_OUTPUT_TOKENS` | `16384` | Maximum output tokens per request |
+| `ZAI_REQUEST_TIMEOUT_SECONDS` | `900` | Inactivity timeout between response bytes; range 60–3600 seconds |
 | `ZAI_REVIEWER_NAME` | `Security Bot` | Name in comment header |
 | `ZAI_THREAD_SIMILARITY_THRESHOLD` | `0.7` | Thread matching strictness (higher = stricter) |
 | `ZAI_SYSTEM_PROMPT` | `You are an expert...` | Custom system prompt |
 | `EXCLUDE_PATTERNS` | `*.lock,dist/**` | Comma-separated file patterns to omit |
 | `MAX_DIFF_CHARS` | `200000` | Optional total diff budget; `0` is unlimited |
+| `MAX_CHUNK_CHARS` | `25000` | Initial patch-character budget per streaming request |
 
 **Benefits:** Customize without editing workflow, change settings without committing, same workflow across environments.
 
@@ -270,7 +289,7 @@ ZAI_SYSTEM_PROMPT: |
 <details>
 <summary>Chunking for Large PRs</summary>
 
-Large PRs are automatically split into 50K character chunks:
+Large PRs are automatically split into 25K-character chunks by default:
 
 ```
 Chunk 1/3 → Z.ai API → Review part 1

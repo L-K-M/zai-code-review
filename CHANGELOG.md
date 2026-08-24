@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.10] - 2026-08-25
+
+### Added
+- Streaming chat-completion handling for reasoning and answer tokens
+- Configurable reasoning effort, output-token budget, inactivity timeout, and chunk size
+- Request observability for first-token latency, total duration, token usage, finish reason, and request ID
+- Adaptive timeout recovery that retries a failed chunk as smaller sections
+
+### Changed
+- GLM-5.3 reasoning effort defaults to `high`
+- The per-request inactivity timeout increased from 5 minutes to 15 minutes and can be configured up to 1 hour
+- Initial chunks decreased from 50K to 25K patch characters
+- Retry delays increased from 1/2 seconds to jittered 15/45-second backoff
+- Model output is capped at 16,384 tokens per request
+
+### Fixed
+- Oversized single-file patches are split into bounded sections without dropping the remainder
+- Long reasoning requests no longer need to finish completely before the client receives activity
+
 ## [0.0.9] - 2026-07-12
 
 ### Added
@@ -213,3 +232,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.0.3]: https://github.com/bizzkoot/zai-code-review/releases/tag/v0.0.3
 
 [0.0.9]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.9
+
+[0.0.10]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.10

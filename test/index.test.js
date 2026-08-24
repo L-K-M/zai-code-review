@@ -14,7 +14,12 @@ const {
   limitFilesByDiffChars,
   buildCoverageWarning,
   buildCommentBody,
+  buildZaiRequestBody,
+  parseSseEventData,
   isRetryableError,
+  isRequestTimeoutError,
+  calculateRetryDelay,
+  normalizeReasoningEffort,
   hashString,
   RETRY_CONFIG,
 } = require('../src/index');
@@ -119,8 +124,8 @@ describe('splitIntoChunks', () => {
   });
 
   test('splits when adding file would exceed chunk size', () => {
-    const smallPatch = 'x'.repeat(40000);
-    const largePatch = 'x'.repeat(40000);
+    const smallPatch = 'x'.repeat(15000);
+    const largePatch = 'x'.repeat(15000);
     const files = [
       { filename: 'small1.txt', patch: smallPatch, status: 'modified' },
       { filename: 'small2.txt', patch: largePatch, status: 'modified' },
@@ -176,7 +181,7 @@ describe('review scope controls', () => {
     expect(warning).toContain('excluded by pattern');
     expect(warning).toContain('no patch returned by GitHub');
     expect(warning).toContain('over the diff budget');
-    expect(warning).toContain('truncated to 50000 characters');
+    expect(warning).toContain('truncated to the configured per-request limit');
   });
 });
 
@@ -568,31 +573,66 @@ describe('formatApiRequestLabel', () => {
 });
 
 describe('splitIntoChunks edge cases', () => {
-  test('truncates files exceeding MAX_CHUNK_SIZE', () => {
-    const oversizedPatch = 'x'.repeat(60000);
+  test('splits oversized files without omitting patch content', () => {
+    const oversizedPatch = `${'x'.repeat(9999)}\n`.repeat(6);
     const files = [
       { filename: 'huge.js', patch: oversizedPatch, status: 'modified' },
     ];
     const chunks = splitIntoChunks(files);
-    expect(chunks.length).toBe(1);
-    expect(chunks[0].length).toBe(1);
-    expect(chunks[0][0].filename).toBe('huge.js');
-    expect(chunks[0][0].truncated).toBe(true);
-    expect(chunks[0][0].patch).toHaveLength(50000);
-    expect(chunks[0][0].originalPatchLength).toBe(60000);
+    const sections = chunks.flat();
+
+    expect(chunks.length).toBe(3);
+    expect(sections.every(section => section.filename === 'huge.js')).toBe(true);
+    expect(sections.every(section => section.patch.length <= 25000)).toBe(true);
+    expect(sections.map(section => section.patch).join('')).toBe(oversizedPatch);
+    expect(sections.map(section => section.splitPart)).toEqual([1, 2, 3]);
+    expect(sections.every(section => section.splitTotal === 3)).toBe(true);
   });
 
-  test('splits oversized file from normal files into separate chunks', () => {
+  test('honors a custom chunk size', () => {
     const files = [
-      { filename: 'small.js', patch: 'small', status: 'modified' },
-      { filename: 'huge.js', patch: 'x'.repeat(60000), status: 'modified' },
-      { filename: 'small2.js', patch: 'small2', status: 'modified' },
+      { filename: 'a.js', patch: 'a'.repeat(6000), status: 'modified' },
+      { filename: 'b.js', patch: 'b'.repeat(6000), status: 'modified' },
     ];
-    const chunks = splitIntoChunks(files);
-    expect(chunks.length).toBeGreaterThanOrEqual(2);
-    const hugeChunk = chunks.find(c => c.some(f => f.filename === 'huge.js'));
-    expect(hugeChunk).toBeDefined();
-    expect(hugeChunk.find(f => f.filename === 'huge.js').truncated).toBe(true);
+    const chunks = splitIntoChunks(files, 8000);
+
+    expect(chunks).toHaveLength(2);
+    expect(chunks.flat().map(file => file.filename)).toEqual(['a.js', 'b.js']);
+  });
+});
+
+describe('Z.ai request configuration', () => {
+  test('uses streaming, bounded output, and high reasoning for GLM 5.3', () => {
+    const body = buildZaiRequestBody('glm-5.3', 'system', 'prompt', {
+      reasoningEffort: 'high',
+      maxOutputTokens: 16384,
+    });
+
+    expect(body.stream).toBe(true);
+    expect(body.reasoning_effort).toBe('high');
+    expect(body.max_tokens).toBe(16384);
+  });
+
+  test('does not send unsupported reasoning effort to older models', () => {
+    const body = buildZaiRequestBody('glm-4.7', 'system', 'prompt');
+
+    expect(body.reasoning_effort).toBeUndefined();
+    expect(body.stream).toBe(true);
+  });
+
+  test('parses streamed content and completion markers', () => {
+    expect(parseSseEventData('data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}')).toEqual(
+      expect.objectContaining({ reasoningContent: 'thinking', content: '', done: false })
+    );
+    expect(parseSseEventData('data: {"choices":[{"delta":{"content":"review"},"finish_reason":"stop"}]}')).toEqual(
+      expect.objectContaining({ content: 'review', finishReason: 'stop', done: false })
+    );
+    expect(parseSseEventData('data: [DONE]')).toEqual({ content: '', done: true });
+  });
+
+  test('validates reasoning effort', () => {
+    expect(normalizeReasoningEffort('HIGH')).toBe('high');
+    expect(normalizeReasoningEffort('max')).toBe('max');
   });
 });
 
@@ -603,5 +643,11 @@ describe('retry classification', () => {
 
   test.each([400, 401, 403, 422])('does not retry permanent HTTP %s responses', statusCode => {
     expect(isRetryableError({ statusCode })).toBe(false);
+  });
+
+  test('recognizes inactivity timeouts and uses longer jittered backoff', () => {
+    expect(isRequestTimeoutError({ code: 'ZAI_REQUEST_TIMEOUT' })).toBe(true);
+    expect(calculateRetryDelay({}, 0, () => 0)).toBe(15000);
+    expect(calculateRetryDelay({}, 1, () => 0)).toBe(45000);
   });
 });

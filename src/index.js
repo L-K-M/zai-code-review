@@ -23,14 +23,18 @@ const COMMENT_MARKER = '<!-- zai-code-review -->';
 const ERR_PREFIX = 'Z.ai API: ';
 const MAX_RESPONSE_SIZE = 1024 * 1024;
 const MAX_COMMENT_SIZE = 65000;
-const REQUEST_TIMEOUT_MS = 300_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
+const DEFAULT_REASONING_EFFORT = 'high';
 const PER_PAGE = 100;
-const MAX_CHUNK_SIZE = 50000;
+const DEFAULT_MAX_CHUNK_SIZE = 25000;
+const MIN_FALLBACK_CHUNK_SIZE = 4000;
 const MAX_LISTED_FILES = 20;
 const RETRY_CONFIG = {
   maxRetries: 3,
-  baseDelayMs: 1000,
-  maxDelayMs: 8000,
+  baseDelayMs: 15000,
+  maxDelayMs: 60000,
+  jitterRatio: 0.2,
 };
 
 function matchesPattern(filename, pattern) {
@@ -147,8 +151,50 @@ function hydratePatchesFromUnifiedDiff(files, diff) {
   });
 }
 
-function splitIntoChunks(files) {
-  const filesWithPatches = files.filter(f => f.patch);
+function splitPatchAtLineBoundary(patch, maxChunkSize) {
+  const parts = [];
+  let offset = 0;
+
+  while (offset < patch.length) {
+    let end = Math.min(offset + maxChunkSize, patch.length);
+    if (end < patch.length) {
+      const newline = patch.lastIndexOf('\n', end);
+      if (newline > offset + Math.floor(maxChunkSize / 2)) {
+        end = newline + 1;
+      }
+    }
+    parts.push(patch.slice(offset, end));
+    offset = end;
+  }
+
+  return parts;
+}
+
+function expandOversizedFiles(files, maxChunkSize) {
+  return files.flatMap(file => {
+    if (!file.patch || file.patch.length <= maxChunkSize) {
+      return [file];
+    }
+
+    const parts = splitPatchAtLineBoundary(file.patch, maxChunkSize);
+    return parts.map((patch, index) => ({
+      ...file,
+      patch,
+      splitPart: index + 1,
+      splitTotal: parts.length,
+      originalPatchLength: file.patch.length,
+    }));
+  });
+}
+
+function splitIntoChunks(files, maxChunkSize = DEFAULT_MAX_CHUNK_SIZE) {
+  const boundedChunkSize = Number.isInteger(maxChunkSize) && maxChunkSize > 0
+    ? maxChunkSize
+    : DEFAULT_MAX_CHUNK_SIZE;
+  const filesWithPatches = expandOversizedFiles(
+    files.filter(f => f.patch),
+    boundedChunkSize
+  );
 
   if (filesWithPatches.length === 0) return [];
 
@@ -159,23 +205,7 @@ function splitIntoChunks(files) {
   for (const file of filesWithPatches) {
     const fileSize = file.patch.length;
 
-    // Keep each request bounded even when GitHub returns an unusually large patch.
-    if (fileSize > MAX_CHUNK_SIZE) {
-      if (currentChunk.length > 0) {
-        chunks.push(currentChunk);
-        currentChunk = [];
-        currentSize = 0;
-      }
-      chunks.push([{
-        ...file,
-        patch: file.patch.slice(0, MAX_CHUNK_SIZE),
-        truncated: true,
-        originalPatchLength: fileSize,
-      }]);
-      continue;
-    }
-
-    if (currentSize + fileSize > MAX_CHUNK_SIZE && currentChunk.length > 0) {
+    if (currentSize + fileSize > boundedChunkSize && currentChunk.length > 0) {
       chunks.push(currentChunk);
       currentChunk = [];
       currentSize = 0;
@@ -211,7 +241,7 @@ function buildCoverageWarning({ excludedFiles = [], patchlessFiles = [], skipped
     details.push(`over the diff budget: ${formatFileList(skippedFiles)}`);
   }
   if (truncatedFiles.length > 0) {
-    details.push(`truncated to ${MAX_CHUNK_SIZE} characters: ${formatFileList(truncatedFiles)}`);
+    details.push(`truncated to the configured per-request limit: ${formatFileList(truncatedFiles)}`);
   }
   if (details.length === 0) {
     return '';
@@ -431,28 +461,83 @@ function mapSecuritySeverityToReviewSeverity(severity) {
   }
 }
 
-function callZaiApi(apiKey, model, systemPrompt, prompt) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify({
-      model,
-      messages: [
-        {
-          role: 'system',
-          content: systemPrompt,
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-    });
+function supportsReasoningEffort(model) {
+  return /^glm-5\.(?:2|3)(?:$|-)/i.test(model || '');
+}
 
+function buildZaiRequestBody(model, systemPrompt, prompt, apiOptions = {}) {
+  const reasoningEffort = apiOptions.reasoningEffort || DEFAULT_REASONING_EFFORT;
+  const maxOutputTokens = apiOptions.maxOutputTokens || DEFAULT_MAX_OUTPUT_TOKENS;
+  const body = {
+    model,
+    messages: [
+      {
+        role: 'system',
+        content: systemPrompt,
+      },
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ],
+    stream: true,
+    max_tokens: maxOutputTokens,
+  };
+
+  if (supportsReasoningEffort(model)) {
+    body.reasoning_effort = reasoningEffort;
+  }
+
+  return body;
+}
+
+function parseSseEventData(event) {
+  const payload = event
+    .split(/\r?\n/)
+    .filter(line => line.startsWith('data:'))
+    .map(line => line.slice(5).trimStart())
+    .join('\n');
+
+  if (!payload) {
+    return { content: '', done: false };
+  }
+  if (payload.trim() === '[DONE]') {
+    return { content: '', done: true };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(payload);
+  } catch (err) {
+    throw new Error(`${ERR_PREFIX}Invalid streaming response.`);
+  }
+
+  if (parsed.error) {
+    throw new Error(`${ERR_PREFIX}Streaming request failed.`);
+  }
+
+  const choice = parsed.choices?.[0];
+  return {
+    content: choice?.delta?.content || '',
+    reasoningContent: choice?.delta?.reasoning_content || '',
+    finishReason: choice?.finish_reason || '',
+    usage: parsed.usage,
+    done: false,
+  };
+}
+
+function callZaiApi(apiKey, model, systemPrompt, prompt, apiOptions = {}) {
+  return new Promise((resolve, reject) => {
+    const requestStartedAt = Date.now();
+    const requestTimeoutMs = apiOptions.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
+    const body = JSON.stringify(buildZaiRequestBody(model, systemPrompt, prompt, apiOptions));
     const url = new URL(ZAI_API_URL);
     const options = {
       hostname: url.hostname,
       path: url.pathname,
       method: 'POST',
       headers: {
+        'Accept': 'text/event-stream',
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
         'Content-Length': Buffer.byteLength(body),
@@ -460,40 +545,115 @@ function callZaiApi(apiKey, model, systemPrompt, prompt) {
     };
 
     const req = https.request(options, res => {
+      const successful = res.statusCode >= 200 && res.statusCode < 300;
+      const streaming = successful && /text\/event-stream/i.test(res.headers['content-type'] || '');
       let data = '';
+      let streamedContent = '';
+      let sawDone = false;
+      let finishReason = '';
+      let usage;
+      let firstTokenAt;
+      const requestId = res.headers['x-request-id'] || res.headers['x-zai-request-id'] || '';
+
       res.on('data', chunk => {
-        data += chunk;
+        data += chunk.toString('utf8');
         if (data.length > MAX_RESPONSE_SIZE) {
           req.destroy(new Error(`${ERR_PREFIX}Response exceeded size limit.`));
+          return;
         }
-      });
-      res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
+
+        if (!streaming) {
+          return;
+        }
+
+        let boundary;
+        while ((boundary = data.search(/\r?\n\r?\n/)) !== -1) {
+          const event = data.slice(0, boundary);
+          const separator = data.slice(boundary).match(/^\r?\n\r?\n/)[0];
+          data = data.slice(boundary + separator.length);
           let parsed;
           try {
-            parsed = JSON.parse(data);
+            parsed = parseSseEventData(event);
           } catch (err) {
-            reject(new Error(`${ERR_PREFIX}Invalid JSON response.`));
+            req.destroy(err);
             return;
           }
-          const content = parsed.choices?.[0]?.message?.content;
-          if (!content) {
-            reject(new Error(`${ERR_PREFIX}Empty response body.`));
-          } else {
-            resolve(content);
+          streamedContent += parsed.content;
+          sawDone ||= parsed.done;
+          finishReason = parsed.finishReason || finishReason;
+          usage = parsed.usage || usage;
+          if (!firstTokenAt && (parsed.content || parsed.reasoningContent)) {
+            firstTokenAt = Date.now();
           }
-        } else {
+          if (streamedContent.length > MAX_RESPONSE_SIZE) {
+            req.destroy(new Error(`${ERR_PREFIX}Response exceeded size limit.`));
+            return;
+          }
+        }
+      });
+
+      res.on('end', () => {
+        if (!successful) {
           const error = new Error(`${ERR_PREFIX}HTTP ${res.statusCode}.`);
           error.statusCode = res.statusCode;
           error.retryAfterMs = parseRetryAfter(res.headers['retry-after']);
           reject(error);
+          return;
+        }
+
+        if (streaming) {
+          if (!sawDone) {
+            const error = new Error(`${ERR_PREFIX}Streaming response ended before completion.`);
+            error.code = 'ZAI_STREAM_INCOMPLETE';
+            reject(error);
+            return;
+          }
+          if (!streamedContent) {
+            reject(new Error(`${ERR_PREFIX}Empty response body.`));
+            return;
+          }
+          if (finishReason === 'length') {
+            core?.warning('Z.ai response reached ZAI_MAX_OUTPUT_TOKENS and may be incomplete.');
+          }
+          const requestIdLabel = requestId ? `, request ${requestId}` : '';
+          const firstTokenLabel = firstTokenAt
+            ? `, first token in ${firstTokenAt - requestStartedAt}ms`
+            : '';
+          const usageLabel = usage?.total_tokens ? `, ${usage.total_tokens} total tokens` : '';
+          core?.info(
+            `Z.ai stream completed in ${Date.now() - requestStartedAt}ms${firstTokenLabel}${usageLabel}${requestIdLabel}.`
+          );
+          resolve(streamedContent);
+          return;
+        }
+
+        let parsed;
+        try {
+          parsed = JSON.parse(data);
+        } catch (err) {
+          reject(new Error(`${ERR_PREFIX}Invalid JSON response.`));
+          return;
+        }
+        const content = parsed.choices?.[0]?.message?.content;
+        if (!content) {
+          reject(new Error(`${ERR_PREFIX}Empty response body.`));
+        } else {
+          resolve(content);
         }
       });
+      res.on('aborted', () => {
+        const error = new Error(`${ERR_PREFIX}Streaming response was aborted.`);
+        error.code = 'ZAI_STREAM_INCOMPLETE';
+        reject(error);
+      });
+      res.on('error', reject);
     });
 
     req.on('error', reject);
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      req.destroy(new Error(`${ERR_PREFIX}Request timed out.`));
+    req.setTimeout(requestTimeoutMs, () => {
+      const error = new Error(`${ERR_PREFIX}Request timed out after ${Math.round(requestTimeoutMs / 1000)} seconds of inactivity.`);
+      error.code = 'ZAI_REQUEST_TIMEOUT';
+      req.destroy(error);
     });
     req.write(body);
     req.end();
@@ -522,29 +682,46 @@ function isRetryableError(error) {
     || error.statusCode >= 500;
 }
 
-async function callZaiApiWithRetry(apiKey, model, systemPrompt, prompt, requestLabel = 'request') {
-  let lastError;
+function isRequestTimeoutError(error) {
+  return error?.code === 'ZAI_REQUEST_TIMEOUT';
+}
 
-  for (let attempt = 0; attempt < RETRY_CONFIG.maxRetries; attempt++) {
+function calculateRetryDelay(error, attempt, random = Math.random) {
+  const exponentialDelay = RETRY_CONFIG.baseDelayMs * Math.pow(3, attempt);
+  const requestedDelay = Math.max(exponentialDelay, error?.retryAfterMs || 0);
+  const jitter = requestedDelay * RETRY_CONFIG.jitterRatio * random();
+  return Math.min(Math.round(requestedDelay + jitter), RETRY_CONFIG.maxDelayMs);
+}
+
+async function callZaiApiWithRetry(
+  apiKey,
+  model,
+  systemPrompt,
+  prompt,
+  requestLabel = 'request',
+  apiOptions = {},
+  retryOptions = {}
+) {
+  let lastError;
+  const maxAttempts = retryOptions.maxAttempts || RETRY_CONFIG.maxRetries;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const attemptStartedAt = Date.now();
     try {
-      return await callZaiApi(apiKey, model, systemPrompt, prompt);
+      return await callZaiApi(apiKey, model, systemPrompt, prompt, apiOptions);
     } catch (err) {
       lastError = err;
       const elapsedMs = Date.now() - attemptStartedAt;
       core?.info(
-        `API call failed for ${requestLabel} (attempt ${attempt + 1}/${RETRY_CONFIG.maxRetries}) after ${elapsedMs}ms: ${err.message}`
+        `API call failed for ${requestLabel} (attempt ${attempt + 1}/${maxAttempts}) after ${elapsedMs}ms: ${err.message}`
       );
 
       if (!isRetryableError(err)) {
         throw err;
       }
 
-      if (attempt < RETRY_CONFIG.maxRetries - 1) {
-        const delayMs = Math.min(
-          Math.max(RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt), err.retryAfterMs || 0),
-          RETRY_CONFIG.maxDelayMs
-        );
+      if (attempt < maxAttempts - 1) {
+        const delayMs = calculateRetryDelay(err, attempt);
         core?.info(`Retrying ${requestLabel} in ${delayMs}ms...`);
         await new Promise(r => setTimeout(r, delayMs));
       }
@@ -552,6 +729,144 @@ async function callZaiApiWithRetry(apiKey, model, systemPrompt, prompt, requestL
   }
 
   throw lastError;
+}
+
+async function retryAfterInitialFailure({
+  initialError,
+  apiKey,
+  model,
+  systemPrompt,
+  prompt,
+  requestLabel,
+  apiOptions,
+}) {
+  let lastError = initialError;
+
+  for (let attempt = 1; attempt < RETRY_CONFIG.maxRetries; attempt++) {
+    const delayMs = calculateRetryDelay(lastError, attempt - 1);
+    core?.info(`Retrying ${requestLabel} in ${delayMs}ms...`);
+    await new Promise(r => setTimeout(r, delayMs));
+    const attemptStartedAt = Date.now();
+    try {
+      return await callZaiApi(apiKey, model, systemPrompt, prompt, apiOptions);
+    } catch (err) {
+      lastError = err;
+      const elapsedMs = Date.now() - attemptStartedAt;
+      core?.info(
+        `API call failed for ${requestLabel} (attempt ${attempt + 1}/${RETRY_CONFIG.maxRetries}) after ${elapsedMs}ms: ${err.message}`
+      );
+      if (!isRetryableError(err)) {
+        throw err;
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+function buildRequestLabel(files, chunkIndex, totalChunks) {
+  return formatApiRequestLabel({
+    chunkIndex,
+    totalChunks,
+    fileCount: files.length,
+    truncatedFileCount: 0,
+    patchChars: files.reduce((total, file) => total + (file.patch?.length || 0), 0),
+    promptChars: ConversationalFeedback.buildPrompt(files, chunkIndex, totalChunks).length,
+  });
+}
+
+async function reviewChunkWithAdaptiveSplit({
+  apiKey,
+  model,
+  systemPrompt,
+  files,
+  chunkIndex,
+  totalChunks,
+  maxChunkSize,
+  apiOptions,
+}) {
+  const prompt = ConversationalFeedback.buildPrompt(files, chunkIndex, totalChunks);
+  const requestLabel = buildRequestLabel(files, chunkIndex, totalChunks);
+
+  try {
+    return await callZaiApiWithRetry(
+      apiKey,
+      model,
+      systemPrompt,
+      prompt,
+      requestLabel,
+      apiOptions,
+      { maxAttempts: 1 }
+    );
+  } catch (err) {
+    if (isRequestTimeoutError(err)) {
+      const fallbackSize = Math.max(
+        MIN_FALLBACK_CHUNK_SIZE,
+        Math.floor(maxChunkSize / 2)
+      );
+      const fallbackChunks = splitIntoChunks(files, fallbackSize);
+
+      if (fallbackChunks.length > 1) {
+        core?.warning(
+          `${requestLabel} timed out; retrying as ${fallbackChunks.length} smaller section(s) of at most ${fallbackSize} patch characters.`
+        );
+        const fallbackReviews = [];
+        for (let index = 0; index < fallbackChunks.length; index++) {
+          const fallbackFiles = fallbackChunks[index];
+          const fallbackPrompt = ConversationalFeedback.buildPrompt(
+            fallbackFiles,
+            chunkIndex,
+            totalChunks
+          );
+          const fallbackLabel = `${buildRequestLabel(fallbackFiles, chunkIndex, totalChunks)}, fallback ${index + 1}/${fallbackChunks.length}`;
+          fallbackReviews.push(await callZaiApiWithRetry(
+            apiKey,
+            model,
+            systemPrompt,
+            fallbackPrompt,
+            fallbackLabel,
+            apiOptions,
+            { maxAttempts: 2 }
+          ));
+        }
+        return fallbackReviews.join('\n\n');
+      }
+    }
+
+    if (!isRetryableError(err)) {
+      throw err;
+    }
+
+    return retryAfterInitialFailure({
+      initialError: err,
+      apiKey,
+      model,
+      systemPrompt,
+      prompt,
+      requestLabel,
+      apiOptions,
+    });
+  }
+}
+
+function parseBoundedInteger(value, fallback, minimum, maximum, inputName) {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum) {
+    return parsed;
+  }
+  if (value) {
+    core?.warning(`${inputName} must be between ${minimum} and ${maximum}; using ${fallback}.`);
+  }
+  return fallback;
+}
+
+function normalizeReasoningEffort(value) {
+  const normalized = (value || DEFAULT_REASONING_EFFORT).toLowerCase();
+  if (['low', 'high', 'max'].includes(normalized)) {
+    return normalized;
+  }
+  core?.warning(`ZAI_REASONING_EFFORT must be low, high, or max; using ${DEFAULT_REASONING_EFFORT}.`);
+  return DEFAULT_REASONING_EFFORT;
 }
 
 async function filterResolvedSuggestions(octokit, owner, repo, pullNumber, suggestions) {
@@ -717,6 +1032,33 @@ async function run() {
   const maxDiffChars = Number.isInteger(parsedMaxDiffChars) && parsedMaxDiffChars >= 0
     ? parsedMaxDiffChars
     : 0;
+  const reasoningEffort = normalizeReasoningEffort(core.getInput('ZAI_REASONING_EFFORT'));
+  const maxOutputTokens = parseBoundedInteger(
+    core.getInput('ZAI_MAX_OUTPUT_TOKENS'),
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    1024,
+    131072,
+    'ZAI_MAX_OUTPUT_TOKENS'
+  );
+  const requestTimeoutSeconds = parseBoundedInteger(
+    core.getInput('ZAI_REQUEST_TIMEOUT_SECONDS'),
+    DEFAULT_REQUEST_TIMEOUT_MS / 1000,
+    60,
+    3600,
+    'ZAI_REQUEST_TIMEOUT_SECONDS'
+  );
+  const maxChunkSize = parseBoundedInteger(
+    core.getInput('MAX_CHUNK_CHARS'),
+    DEFAULT_MAX_CHUNK_SIZE,
+    MIN_FALLBACK_CHUNK_SIZE,
+    50000,
+    'MAX_CHUNK_CHARS'
+  );
+  const apiOptions = {
+    reasoningEffort,
+    maxOutputTokens,
+    requestTimeoutMs: requestTimeoutSeconds * 1000,
+  };
   const token = core.getInput('GITHUB_TOKEN');
   core.setSecret(token);
   let threadSimilarityThreshold = parseFloat(core.getInput('ZAI_THREAD_SIMILARITY_THRESHOLD'));
@@ -792,43 +1134,41 @@ async function run() {
     }
   }
 
-  const chunks = splitIntoChunks(reviewFiles);
-  const truncatedFiles = chunks
-    .flat()
-    .filter(file => file.truncated)
-    .map(file => file.filename);
+  const chunks = splitIntoChunks(reviewFiles, maxChunkSize);
+  const splitFiles = new Set(
+    chunks.flat().filter(file => file.splitTotal > 1).map(file => file.filename)
+  );
   const coverageWarning = buildCoverageWarning({
     excludedFiles,
     patchlessFiles,
     skippedFiles: limited.skippedFiles,
-    truncatedFiles,
   });
-  core.info(`Processing ${reviewFiles.length} file(s) in ${chunks.length} chunk(s)...`);
+  core.info(
+    `Processing ${reviewFiles.length} file(s) in ${chunks.length} chunk(s) with `
+      + `${reasoningEffort} reasoning, ${maxOutputTokens} max output tokens, `
+      + `${maxChunkSize} max patch characters, streaming enabled, and a `
+      + `${requestTimeoutSeconds}s inactivity timeout.`
+  );
+  if (splitFiles.size > 0) {
+    core.info(`Split ${splitFiles.size} oversized file patch(es) across bounded request sections without omitting content.`);
+  }
 
   const reviews = [];
   const failedChunks = [];
 
   for (let i = 0; i < chunks.length; i++) {
     try {
-      const truncatedChunkFiles = chunks[i].filter(f => f.truncated);
-      if (truncatedChunkFiles.length > 0) {
-        for (const file of truncatedChunkFiles) {
-          core.warning(
-            `File ${file.filename} was truncated from ${file.originalPatchLength} to ${MAX_CHUNK_SIZE} characters.`
-          );
-        }
-      }
-      core.info(`Processing chunk ${i + 1}/${chunks.length} (${chunks[i].length} file(s))...`);
-      const prompt = ConversationalFeedback.buildPrompt(chunks[i], i, chunks.length);
-      const requestLabel = formatApiRequestLabel({
+      core.info(`Processing chunk ${i + 1}/${chunks.length} (${chunks[i].length} file section(s))...`);
+      const rawReview = await reviewChunkWithAdaptiveSplit({
+        apiKey,
+        model,
+        systemPrompt,
+        files: chunks[i],
         chunkIndex: i,
         totalChunks: chunks.length,
-        fileCount: chunks[i].length,
-        truncatedFileCount: truncatedChunkFiles.length,
-        patchChars: chunks[i].reduce((total, file) => total + (file.patch?.length || 0), 0),
-        promptChars: prompt.length,
+        maxChunkSize,
+        apiOptions,
       });
-      const rawReview = await callZaiApiWithRetry(apiKey, model, systemPrompt, prompt, requestLabel);
       const review = ConversationalFeedback.postProcess(rawReview);
       // Prepend actionable security findings for this chunk
       const chunkFindings = SecurityCheck.checkSecurity(chunks[i], customPatterns);
@@ -928,6 +1268,7 @@ module.exports = {
   getChangedFiles,
   hydratePatchesFromUnifiedDiff,
   splitIntoChunks,
+  splitPatchAtLineBoundary,
   matchesPattern,
   filterFiles,
   limitFilesByDiffChars,
@@ -946,8 +1287,13 @@ module.exports = {
   findSimilarThread,
   callZaiApi,
   callZaiApiWithRetry,
+  buildZaiRequestBody,
+  parseSseEventData,
   parseRetryAfter,
   isRetryableError,
+  isRequestTimeoutError,
+  calculateRetryDelay,
+  normalizeReasoningEffort,
   hashString,
   RETRY_CONFIG,
 };

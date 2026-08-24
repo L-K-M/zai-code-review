@@ -206,7 +206,12 @@ class ConversationalFeedback {
   static buildPrompt(files, chunkIndex, totalChunks) {
     const diffs = files
       .filter(f => f.patch)
-      .map(f => `### ${f.filename} (${f.status})\n\u0060\u0060\u0060diff\n${f.patch}\n\u0060\u0060\u0060`)
+      .map(f => {
+        const section = f.splitTotal > 1
+          ? `, section ${f.splitPart}/${f.splitTotal}`
+          : '';
+        return `### ${f.filename} (${f.status}${section})\n\u0060\u0060\u0060diff\n${f.patch}\n\u0060\u0060\u0060`;
+      })
       .join('\n\n');
 
     let prompt = [

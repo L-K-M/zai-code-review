@@ -8,6 +8,18 @@ inputs:
     description: "Z.ai AI model"
     required: false
     default: "glm-4.7"
+  ZAI_REASONING_EFFORT:
+    description: "Reasoning effort for supported models: low, high, or max"
+    required: false
+    default: "high"
+  ZAI_MAX_OUTPUT_TOKENS:
+    description: "Maximum model output tokens per review request"
+    required: false
+    default: "16384"
+  ZAI_REQUEST_TIMEOUT_SECONDS:
+    description: "Maximum inactivity between response bytes before a request is timed out"
+    required: false
+    default: "900"
   ZAI_SYSTEM_PROMPT:
     description: "Custom system prompt for the AI reviewer"
     required: false
@@ -24,6 +36,10 @@ inputs:
     description: "Maximum total diff characters sent to the API (0 = unlimited)"
     required: false
     default: "0"
+  MAX_CHUNK_CHARS:
+    description: "Maximum patch characters per initial API request"
+    required: false
+    default: "25000"
   ZAI_THREAD_SIMILARITY_THRESHOLD:
     description: "Similarity threshold (0-1) for matching existing comment threads (default: 0.6)"
     required: false
