@@ -5,6 +5,14 @@ const InlineSuggestion = require('./review/InlineSuggestion');
 const FeedbackLearning = require('./review/FeedbackLearning');
 const SecurityCheck = require('./review/SecurityCheck');
 const { calculateSimilarity, findSimilarThread } = require('./review/ThreadSimilarity');
+const {
+  normalizeReviewMode,
+  resolveReviewMode,
+  parseReviewState,
+  buildReviewStateMarker,
+  selectRotatingAuditFiles,
+  buildScopeNotice,
+} = require('./review/ReviewScope');
 
 let core;
 let github;
@@ -29,6 +37,8 @@ const DEFAULT_REASONING_EFFORT = 'high';
 const PER_PAGE = 100;
 const DEFAULT_MAX_CHUNK_SIZE = 25000;
 const MIN_FALLBACK_CHUNK_SIZE = 4000;
+const DEFAULT_UNCHANGED_AUDIT_CHARS = 25000;
+const MAX_COMPARE_FILES = 300;
 const MAX_LISTED_FILES = 20;
 const RETRY_CONFIG = {
   maxRetries: 3,
@@ -126,6 +136,35 @@ async function getChangedFiles(octokit, owner, repo, pullNumber) {
   } catch (err) {
     core.warning(`Could not fetch the pull request diff: ${err.message}`);
     return files;
+  }
+}
+
+async function getIncrementalFiles(octokit, owner, repo, baseSha, headSha) {
+  try {
+    const { data } = await octokit.rest.repos.compareCommitsWithBasehead({
+      owner,
+      repo,
+      basehead: `${baseSha}...${headSha}`,
+      per_page: PER_PAGE,
+    });
+    if (!['ahead', 'identical'].includes(data.status)) {
+      return {
+        safe: false,
+        files: [],
+        reason: `the previous reviewed commit is ${data.status || 'not an ancestor'}`,
+      };
+    }
+    if ((data.files || []).length >= MAX_COMPARE_FILES) {
+      return {
+        safe: false,
+        files: [],
+        reason: `the incremental comparison reached GitHub's ${MAX_COMPARE_FILES}-file limit`,
+      };
+    }
+    return { safe: true, files: data.files || [], reason: '' };
+  } catch (err) {
+    core?.warning(`Could not compare the previous reviewed commit: ${err.message}`);
+    return { safe: false, files: [], reason: 'the incremental comparison failed' };
   }
 }
 
@@ -253,10 +292,11 @@ function buildCoverageWarning({ excludedFiles = [], patchlessFiles = [], skipped
   ].join('\n');
 }
 
-function buildCommentBody(reviewerName, review) {
+function buildCommentBody(reviewerName, review, reviewState = null) {
   const safeReviewerName = String(reviewerName || 'Z.ai Code Review').slice(0, 200);
   const prefix = `## ${safeReviewerName}\n\n`;
-  const suffix = `\n\n${COMMENT_MARKER}`;
+  const stateMarker = buildReviewStateMarker(reviewState);
+  const suffix = `\n\n${stateMarker ? `${stateMarker}\n` : ''}${COMMENT_MARKER}`;
   const body = `${prefix}${review}${suffix}`;
   if (body.length <= MAX_COMMENT_SIZE) {
     return body;
@@ -894,6 +934,98 @@ function normalizeReasoningEffort(value) {
   return DEFAULT_REASONING_EFFORT;
 }
 
+async function determineReviewScope({
+  octokit,
+  owner,
+  repo,
+  requestedMode,
+  previousState,
+  headSha,
+  fullFiles,
+  auditChars,
+}) {
+  const fullScope = reason => ({
+    files: fullFiles.map(file => ({ ...file, reviewScope: 'full' })),
+    actualMode: 'full',
+    requestedMode,
+    reason,
+    previousSha: previousState?.lastReviewedSha || '',
+    headSha,
+    deltaFileCount: fullFiles.length,
+    auditFileCount: 0,
+    nextAuditCursor: previousState?.auditCursor || 0,
+  });
+
+  if (requestedMode === 'full') return fullScope('');
+  if (!previousState?.lastReviewedSha) {
+    return fullScope(` ${requestedMode} mode is bootstrapping without prior completed state.`);
+  }
+  if (!headSha) {
+    return fullScope(' The pull request head SHA is unavailable.');
+  }
+
+  const comparison = await getIncrementalFiles(
+    octokit,
+    owner,
+    repo,
+    previousState.lastReviewedSha,
+    headSha
+  );
+  if (!comparison.safe) {
+    return fullScope(` Full review fallback: ${comparison.reason}.`);
+  }
+
+  const fullMetadata = new Map(fullFiles.map(file => [file.filename, file]));
+  const deltaFiles = comparison.files.map(file => ({
+    ...(fullMetadata.get(file.filename) || {}),
+    ...file,
+    reviewScope: 'delta',
+  }));
+  if (requestedMode === 'incremental') {
+    return {
+      files: deltaFiles,
+      actualMode: 'incremental',
+      requestedMode,
+      reason: '',
+      previousSha: previousState.lastReviewedSha,
+      headSha,
+      deltaFileCount: deltaFiles.length,
+      auditFileCount: 0,
+      nextAuditCursor: previousState.auditCursor,
+    };
+  }
+
+  const audit = selectRotatingAuditFiles(
+    fullFiles,
+    deltaFiles,
+    auditChars,
+    previousState.auditCursor
+  );
+  return {
+    files: [...deltaFiles, ...audit.files],
+    actualMode: 'hybrid',
+    requestedMode,
+    reason: '',
+    previousSha: previousState.lastReviewedSha,
+    headSha,
+    deltaFileCount: deltaFiles.length,
+    auditFileCount: audit.files.length,
+    nextAuditCursor: audit.nextCursor,
+  };
+}
+
+function buildNextReviewState(previousState, scope, headSha) {
+  return {
+    version: 1,
+    lastReviewedSha: headSha,
+    lastFullReviewSha: scope.actualMode === 'full'
+      ? headSha
+      : previousState?.lastFullReviewSha || '',
+    auditCursor: scope.nextAuditCursor || 0,
+    mode: scope.actualMode,
+  };
+}
+
 async function filterResolvedSuggestions(octokit, owner, repo, pullNumber, suggestions) {
   try {
     if (typeof octokit.graphql === 'function') {
@@ -1019,8 +1151,8 @@ async function getIssueComments(octokit, owner, repo, pullNumber) {
   return comments;
 }
 
-async function upsertReviewComment(octokit, owner, repo, pullNumber, body) {
-  const comments = await getIssueComments(octokit, owner, repo, pullNumber);
+async function upsertReviewComment(octokit, owner, repo, pullNumber, body, knownComments = null) {
+  const comments = knownComments || await getIssueComments(octokit, owner, repo, pullNumber);
   const existing = comments.find(comment => comment.body?.includes(COMMENT_MARKER));
 
   if (existing) {
@@ -1079,6 +1211,18 @@ async function run() {
     50000,
     'MAX_CHUNK_CHARS'
   );
+  const configuredReviewMode = normalizeReviewMode(core.getInput('ZAI_REVIEW_MODE'));
+  const rawAuditChars = Number.parseInt(core.getInput('ZAI_UNCHANGED_AUDIT_CHARS'), 10);
+  const unchangedAuditChars = Number.isInteger(rawAuditChars)
+    && rawAuditChars >= 0
+    && rawAuditChars <= 50000
+    ? rawAuditChars
+    : DEFAULT_UNCHANGED_AUDIT_CHARS;
+  if (core.getInput('ZAI_UNCHANGED_AUDIT_CHARS') && rawAuditChars !== unchangedAuditChars) {
+    core.warning(
+      `ZAI_UNCHANGED_AUDIT_CHARS must be between 0 and 50000; using ${DEFAULT_UNCHANGED_AUDIT_CHARS}.`
+    );
+  }
   const apiOptions = {
     reasoningEffort,
     maxOutputTokens,
@@ -1105,26 +1249,57 @@ async function run() {
   }
 
   const octokit = github.getOctokit(token);
+  const labels = context.payload.pull_request?.labels || [];
+  const modeResolution = resolveReviewMode(configuredReviewMode, labels);
+  if (modeResolution.labelModes.length > 1) {
+    core.warning(
+      `Conflicting Z.ai review mode labels (${modeResolution.labelModes.join(', ')}); using ${modeResolution.mode}.`
+    );
+  } else if (modeResolution.labelModes.length === 1) {
+    core.info(`Review mode overridden by label: ${modeResolution.mode}.`);
+  }
 
   // FeedbackLearning repoId: owner/repo
   const repoId = `${owner}/${repo}`;
 
   core.info(`Fetching changed files for PR #${pullNumber}...`);
 
+  const issueComments = await getIssueComments(octokit, owner, repo, pullNumber);
+  const existingReviewComment = issueComments.find(comment => comment.body?.includes(COMMENT_MARKER));
+  const previousState = parseReviewState(existingReviewComment?.body);
   const files = await getChangedFiles(octokit, owner, repo, pullNumber);
-  const filteredFiles = filterFiles(files, excludePatterns);
+  const filteredFullFiles = filterFiles(files, excludePatterns);
   const excludedFiles = files
-    .filter(file => !filteredFiles.includes(file))
+    .filter(file => !filteredFullFiles.includes(file))
     .map(file => file.filename);
-  const patchlessFiles = filteredFiles.filter(file => !file.patch).map(file => file.filename);
-  const limited = limitFilesByDiffChars(filteredFiles, maxDiffChars);
+  const scope = await determineReviewScope({
+    octokit,
+    owner,
+    repo,
+    requestedMode: modeResolution.mode,
+    previousState,
+    headSha,
+    fullFiles: filteredFullFiles,
+    auditChars: unchangedAuditChars,
+  });
+  const scopedFiles = filterFiles(scope.files, excludePatterns);
+  const patchlessFiles = scopedFiles.filter(file => !file.patch).map(file => file.filename);
+  const limited = limitFilesByDiffChars(scopedFiles, maxDiffChars);
   const reviewFiles = limited.files;
+  const scopeNotice = buildScopeNotice(scope);
   const scopeCoverageWarning = buildCoverageWarning({
     excludedFiles,
     patchlessFiles,
     skippedFiles: limited.skippedFiles,
   });
+  const successfulState = /^[0-9a-f]{40}$/i.test(headSha || '')
+    ? buildNextReviewState(previousState, scope, headSha)
+    : previousState;
 
+  core.info(
+    `Selected ${scope.actualMode} review scope: ${scope.deltaFileCount} delta/full file(s), `
+      + `${scope.auditFileCount} rotating audit section(s).`
+  );
   if (excludedFiles.length > 0) {
     core.info(`Excluded ${excludedFiles.length} file(s) matching EXCLUDE_PATTERNS.`);
   }
@@ -1136,9 +1311,10 @@ async function run() {
     const emptyReview = ConversationalFeedback.formatReview('');
     const body = buildCommentBody(
       reviewerName,
-      [scopeCoverageWarning, emptyReview].filter(Boolean).join('\n\n')
+      [scopeNotice, scopeCoverageWarning, emptyReview].filter(Boolean).join('\n\n'),
+      successfulState
     );
-    await upsertReviewComment(octokit, owner, repo, pullNumber, body);
+    await upsertReviewComment(octokit, owner, repo, pullNumber, body, issueComments);
     core.info('No patchable changes found within the configured review scope.');
     return;
   }
@@ -1151,7 +1327,10 @@ async function run() {
     core.info(`Loaded ${customPatterns.length} custom security pattern(s) from .zai-review.yaml`);
   }
 
-  const securityFindings = SecurityCheck.checkSecurity(reviewFiles, customPatterns);
+  const securityReviewFiles = scope.actualMode === 'full'
+    ? reviewFiles
+    : reviewFiles.filter(file => file.reviewScope === 'delta');
+  const securityFindings = SecurityCheck.checkSecurity(securityReviewFiles, customPatterns);
   if (securityFindings.length > 0) {
     core.warning(`Security findings detected: ${securityFindings.length}`);
     for (const finding of securityFindings) {
@@ -1163,11 +1342,14 @@ async function run() {
   const splitFiles = new Set(
     chunks.flat().filter(file => file.splitTotal > 1).map(file => file.filename)
   );
-  const coverageWarning = buildCoverageWarning({
-    excludedFiles,
-    patchlessFiles,
-    skippedFiles: limited.skippedFiles,
-  });
+  const coverageWarning = [
+    scopeNotice,
+    buildCoverageWarning({
+      excludedFiles,
+      patchlessFiles,
+      skippedFiles: limited.skippedFiles,
+    }),
+  ].filter(Boolean).join('\n\n');
   core.info(
     `Processing ${reviewFiles.length} file(s) in ${chunks.length} chunk(s) with `
       + `${reasoningEffort} reasoning, ${maxOutputTokens} max output tokens, `
@@ -1196,7 +1378,10 @@ async function run() {
       });
       const review = ConversationalFeedback.postProcess(rawReview);
       // Prepend actionable security findings for this chunk
-      const chunkFindings = SecurityCheck.checkSecurity(chunks[i], customPatterns);
+      const chunkSecurityFiles = scope.actualMode === 'full'
+        ? chunks[i]
+        : chunks[i].filter(file => file.reviewScope === 'delta');
+      const chunkFindings = SecurityCheck.checkSecurity(chunkSecurityFiles, customPatterns);
       const securityReview = formatSecurityFindingsForReview(chunkFindings);
       const summaryReview = securityReview ? `${securityReview}\n\n${rawReview}` : rawReview;
       let reviewWithSecurity = review;
@@ -1246,9 +1431,11 @@ async function run() {
     coverageWarning
   );
 
-  const body = buildCommentBody(reviewerName, combinedReview);
+  // Only advance the delta baseline after every selected chunk completed.
+  const persistedState = failedChunks.length === 0 ? successfulState : previousState;
+  const body = buildCommentBody(reviewerName, combinedReview, persistedState);
 
-  await upsertReviewComment(octokit, owner, repo, pullNumber, body);
+  await upsertReviewComment(octokit, owner, repo, pullNumber, body, issueComments);
 
   // Inline suggestion integration
   if (actionableSuggestions.length > 0) {
@@ -1291,6 +1478,7 @@ if (require.main === module) {
 
 module.exports = {
   getChangedFiles,
+  getIncrementalFiles,
   hydratePatchesFromUnifiedDiff,
   splitIntoChunks,
   splitPatchAtLineBoundary,
@@ -1321,6 +1509,14 @@ module.exports = {
   isOutputLimitError,
   calculateRetryDelay,
   normalizeReasoningEffort,
+  normalizeReviewMode,
+  resolveReviewMode,
+  parseReviewState,
+  buildReviewStateMarker,
+  selectRotatingAuditFiles,
+  buildScopeNotice,
+  determineReviewScope,
+  buildNextReviewState,
   hashString,
   RETRY_CONFIG,
 };

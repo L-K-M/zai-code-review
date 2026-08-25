@@ -1,6 +1,6 @@
 {
   "name": "zai-code-review",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "description": "AI-powered code review GitHub Action using Z.ai",
   "main": "dist/index.js",
   "engines": {

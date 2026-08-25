@@ -205,6 +205,20 @@ describe('buildCommentBody', () => {
     expect(body.length).toBeLessThanOrEqual(65000);
     expect(body).toContain('review');
   });
+
+  test('keeps completed review state inside the bounded bot comment', () => {
+    const body = buildCommentBody('Reviewer', 'review', {
+      version: 1,
+      lastReviewedSha: 'a'.repeat(40),
+      lastFullReviewSha: 'b'.repeat(40),
+      auditCursor: 2,
+      mode: 'hybrid',
+    });
+
+    expect(body).toContain('<!-- zai-code-review-state:{');
+    expect(body).toContain('"auditCursor":2');
+    expect(body.endsWith('<!-- zai-code-review -->')).toBe(true);
+  });
 });
 
 describe('buildChunkPrompt', () => {

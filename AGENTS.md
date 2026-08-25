@@ -223,3 +223,25 @@ All action inputs are defined in `action.yml`. When adding new inputs:
 1. Add the input to `action.yml` with description, required status, and default value
 2. Retrieve it in code using `core.getInput('INPUT_NAME', { required: true/false })`
 3. Mark sensitive inputs with `core.setSecret()` immediately after retrieval
+
+## Review modes
+
+`ZAI_REVIEW_MODE` controls review scope. The default remains `full`; repositories
+must opt into the other modes deliberately.
+
+- `full`: review the complete base-to-head PR diff on every run. Use for the
+  first deep review, high-risk changes, force-push recovery, or a deliberate
+  pre-merge audit.
+- `incremental`: after the first completed review, review only changes since
+  the last successfully reviewed head. Use for low-risk or very large PRs when
+  shortest feedback latency matters more than repeated inspection of old code.
+- `hybrid`: after the first completed review, review the incremental delta plus
+  a rotating sample of older PR changes. This is the recommended iterative
+  implementation mode. `ZAI_UNCHANGED_AUDIT_CHARS` controls the sample budget.
+
+Implementers can override the configured mode for a PR by applying exactly one
+of `zai-review:full`, `zai-review:hybrid`, or `zai-review:incremental` before the
+next review-triggering push. Conflicting labels choose the widest/safest scope.
+A missing state marker, failed comparison, non-ancestor/force-pushed history,
+or incomplete prior review must fall back to `full`. Review state may advance
+only after every selected chunk succeeds.

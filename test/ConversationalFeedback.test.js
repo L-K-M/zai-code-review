@@ -41,6 +41,20 @@ describe('ConversationalFeedback', () => {
       expect(prompt).toContain('Only emit a suggestion marker');
     });
 
+    it('distinguishes follow-up deltas from rotating audit material', () => {
+      const files = [
+        { filename: 'fix.js', patch: '+fixed();', status: 'modified', reviewScope: 'delta' },
+        { filename: 'old.js', patch: '+old();', status: 'added', reviewScope: 'audit' }
+      ];
+
+      const prompt = ConversationalFeedback.buildPrompt(files, 0, 1);
+
+      expect(prompt).toContain('fix.js (modified, delta)');
+      expect(prompt).toContain('old.js (added, audit)');
+      expect(prompt).toContain('changes since the last completed review');
+      expect(prompt).toContain('rotating sample of older PR changes');
+    });
+
     it('includes format instructions for findings', () => {
       const files = [
         { filename: 'foo.js', patch: 'diff', status: 'modified' }

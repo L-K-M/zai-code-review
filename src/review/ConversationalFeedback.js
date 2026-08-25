@@ -210,7 +210,10 @@ class ConversationalFeedback {
         const section = f.splitTotal > 1
           ? `, section ${f.splitPart}/${f.splitTotal}`
           : '';
-        return `### ${f.filename} (${f.status}${section})\n\u0060\u0060\u0060diff\n${f.patch}\n\u0060\u0060\u0060`;
+        const scope = f.reviewScope && f.reviewScope !== 'full'
+          ? `, ${f.reviewScope}`
+          : '';
+        return `### ${f.filename} (${f.status}${section}${scope})\n\u0060\u0060\u0060diff\n${f.patch}\n\u0060\u0060\u0060`;
       })
       .join('\n\n');
 
@@ -223,6 +226,21 @@ class ConversationalFeedback {
       'Do not emit suggestion markers for uncertain advice, general feedback, or code that is not visible in the diff.',
       '',
     ].join(' ');
+
+    const scopes = new Set(files.map(file => file.reviewScope).filter(Boolean));
+    if (scopes.has('delta')) {
+      prompt += [
+        '\n\nThis is a follow-up review. Sections marked "delta" contain only changes since the last completed review.',
+        'Prioritize whether those changes correctly address earlier feedback and whether they introduce regressions.',
+        'Do not re-raise an unchanged concern merely because surrounding PR code is visible.',
+      ].join(' ');
+    }
+    if (scopes.has('audit')) {
+      prompt += [
+        '\n\nSections marked "audit" are a rotating sample of older PR changes.',
+        'Report only high-confidence, meaningful issues in that sample; avoid speculative or stylistic churn.',
+      ].join(' ');
+    }
 
     // Add format instructions
     const formatInstructions = `

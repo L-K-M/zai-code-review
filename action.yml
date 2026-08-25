@@ -40,6 +40,14 @@ inputs:
     description: "Maximum patch characters per initial API request"
     required: false
     default: "25000"
+  ZAI_REVIEW_MODE:
+    description: "Review scope: full, incremental, or hybrid; zai-review:* PR labels override it"
+    required: false
+    default: "full"
+  ZAI_UNCHANGED_AUDIT_CHARS:
+    description: "Maximum unchanged PR patch characters rotated into each hybrid follow-up (0 disables)"
+    required: false
+    default: "25000"
   ZAI_THREAD_SIMILARITY_THRESHOLD:
     description: "Similarity threshold (0-1) for matching existing comment threads (default: 0.6)"
     required: false

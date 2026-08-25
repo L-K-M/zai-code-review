@@ -2,11 +2,21 @@
 
 AI-powered GitHub Pull Request code review using Z.ai models. Automatic PR comments, bug detection, improvement suggestions, and security checks via GitHub Actions.
 
-**Latest version: v0.0.12**
+**Latest version: v0.0.13**
 
-## ✨ What's New in v0.0.12
+## ✨ What's New in v0.0.13
+
+- 🔄 **Review scope modes** - Choose full, incremental, or hybrid reviews, with safe full-review bootstrap and fallback behavior
+- 🎯 **Hybrid follow-ups** - Review the latest implementation delta plus a bounded rotating sample of older PR changes
+- 🏷️ **Per-PR overrides** - Implementers can select a mode with `zai-review:*` labels before the next review-triggering push
+- 💾 **Completed-review state** - The delta baseline advances only after all selected review chunks succeed
+
+<details>
+<summary>Previous: v0.0.12</summary>
 
 - 🛡️ **Safe stream completion** - The terminal `[DONE]` event now has the same normalized shape as token events, preventing a completion-time crash
+
+</details>
 
 <details>
 <summary>Previous: v0.0.11</summary>
@@ -128,7 +138,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Code Review
-        uses: L-K-M/zai-code-review@v0.0.12
+        uses: L-K-M/zai-code-review@v0.0.13
         with:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-5.3' }}
@@ -140,6 +150,8 @@ jobs:
           EXCLUDE_PATTERNS: ${{ vars.EXCLUDE_PATTERNS || '*.lock,package-lock.json,yarn.lock,pnpm-lock.yaml' }}
           MAX_DIFF_CHARS: ${{ vars.MAX_DIFF_CHARS || '0' }}
           MAX_CHUNK_CHARS: ${{ vars.MAX_CHUNK_CHARS || '25000' }}
+          ZAI_REVIEW_MODE: ${{ vars.ZAI_REVIEW_MODE || 'full' }}
+          ZAI_UNCHANGED_AUDIT_CHARS: ${{ vars.ZAI_UNCHANGED_AUDIT_CHARS || '25000' }}
           ZAI_THREAD_SIMILARITY_THRESHOLD: ${{ vars.ZAI_THREAD_SIMILARITY_THRESHOLD || '0.6' }}
 ```
 
@@ -217,6 +229,30 @@ If the workflow checks out the repository, the action can consume an existing
 `.zai-feedback.json` file to filter known unwanted suggestions. The action does not infer
 acceptance from GitHub review events or commit this file automatically.
 
+## 🔄 Review Scope Modes
+
+The default `full` mode reviews the complete PR on every run. Large PRs can opt
+into faster follow-up cycles:
+
+- **`full`** — Review the complete PR. Use for initial/deep reviews, high-risk
+  changes, or an intentional pre-merge audit.
+- **`incremental`** — After the first completed review, review only changes
+  since the last successfully reviewed head.
+- **`hybrid`** — Review that incremental delta plus a rotating sample of older
+  PR changes. This is the recommended mode for iterative review/fix cycles.
+
+The first `incremental` or `hybrid` run is always a full bootstrap review. The
+action also falls back to full after force pushes, failed comparisons, or when
+no completed review state is available. State advances only when every selected
+chunk succeeds.
+
+Set `ZAI_REVIEW_MODE` in the workflow. Implementers can override it per PR by
+applying exactly one label before the next review-triggering push:
+`zai-review:full`, `zai-review:hybrid`, or `zai-review:incremental`. Conflicting
+labels choose the widest/safest scope. In hybrid mode,
+`ZAI_UNCHANGED_AUDIT_CHARS` controls the rotating audit budget; set it to `0` to
+disable unchanged sampling.
+
 ## 🏗️ How It Works
 
 <details>
@@ -260,6 +296,8 @@ For small PRs, all changes are sent in a single streaming API request. Larger PR
 | `EXCLUDE_PATTERNS` | `*.lock,dist/**` | Comma-separated file patterns to omit |
 | `MAX_DIFF_CHARS` | `200000` | Optional total diff budget; `0` is unlimited |
 | `MAX_CHUNK_CHARS` | `25000` | Initial patch-character budget per streaming request |
+| `ZAI_REVIEW_MODE` | `full` | Review scope: `full`, `incremental`, or `hybrid` |
+| `ZAI_UNCHANGED_AUDIT_CHARS` | `25000` | Older PR patch-character budget rotated into hybrid follow-ups; `0` disables |
 
 **Benefits:** Customize without editing workflow, change settings without committing, same workflow across environments.
 

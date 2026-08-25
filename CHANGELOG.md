@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.13] - 2026-08-25
+
+### Added
+- Added opt-in `full`, `incremental`, and `hybrid` review scope modes
+- Added bounded rotating audits of older PR changes during hybrid follow-up reviews
+- Added per-PR `zai-review:full`, `zai-review:hybrid`, and `zai-review:incremental` label overrides
+- Persisted the last completely reviewed head and audit cursor in the bot's hidden comment state
+
+### Changed
+- Incremental comparisons safely fall back to a full review when state is missing, history diverges, comparison fails, or GitHub's compare-file limit is reached
+- Review state advances only when every selected chunk succeeds
+- Hybrid prompts distinguish current delta changes from older rotating audit material
+
 ## [0.0.12] - 2026-08-25
 
 ### Fixed
@@ -255,3 +268,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.0.11]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.11
 
 [0.0.12]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.12
+
+[0.0.13]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.13
