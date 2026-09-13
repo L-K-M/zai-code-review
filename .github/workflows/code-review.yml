@@ -14,8 +14,18 @@ jobs:
   review:
     name: Review
     runs-on: ubuntu-latest
+    # Backstop only. The review step below carries the real budget and is
+    # shorter, so it always fires first. That keeps running out of time a step
+    # failure, which the reporting step can act on, and leaves "cancelled" to
+    # mean only a superseded run.
+    timeout-minutes: 180
     steps:
+      - name: Record when the review started
+        run: echo "REVIEW_STARTED_AT=$(date -u +%s)" >> "$GITHUB_ENV"
+
       - name: Code Review
+        id: review
+        timeout-minutes: 170
         uses: L-K-M/zai-code-review@v0.0.13
         with:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
@@ -29,3 +39,41 @@ jobs:
           EXCLUDE_PATTERNS: ${{ vars.EXCLUDE_PATTERNS || '*.lock,package-lock.json,yarn.lock,pnpm-lock.yaml' }}
           MAX_DIFF_CHARS: ${{ vars.MAX_DIFF_CHARS || '0' }}
           MAX_CHUNK_CHARS: ${{ vars.MAX_CHUNK_CHARS || '25000' }}
+
+      - name: Report an unfinished review on the PR
+        if: ${{ !cancelled() && steps.review.outcome == 'failure' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          REVIEW_BUDGET_MINUTES: "170"
+        run: |
+          set -euo pipefail
+
+          started_at="${REVIEW_STARTED_AT:-}"
+          if [ -n "$started_at" ]; then
+            elapsed_minutes=$(( ( $(date -u +%s) - started_at ) / 60 ))
+            if [ "$elapsed_minutes" -ge "$(( REVIEW_BUDGET_MINUTES - 2 ))" ]; then
+              summary="ran out of time after ${elapsed_minutes} minutes, against its ${REVIEW_BUDGET_MINUTES} minute budget"
+            else
+              summary="failed after ${elapsed_minutes} minutes"
+            fi
+          else
+            summary="did not finish"
+          fi
+
+          notice="${RUNNER_TEMP}/review-unfinished.md"
+          {
+            echo "### Z.ai Code Review did not finish"
+            echo
+            echo "The reviewer ${summary}, so this revision has no findings. Read the missing review as missing, not as a clean one."
+            echo
+            echo "[Workflow run](${RUN_URL})"
+          } > "$notice"
+
+          cat "$notice" >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=Z.ai review did not finish::The reviewer ${summary}. No findings were posted for this revision."
+
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            -F "body=@${notice}"
