@@ -4,6 +4,7 @@ const ConversationalFeedback = require('./review/ConversationalFeedback');
 const InlineSuggestion = require('./review/InlineSuggestion');
 const FeedbackLearning = require('./review/FeedbackLearning');
 const SecurityCheck = require('./review/SecurityCheck');
+const ModelRouter = require('./review/ModelRouter');
 const { calculateSimilarity, findSimilarThread } = require('./review/ThreadSimilarity');
 const {
   normalizeReviewMode,
@@ -425,6 +426,43 @@ function buildCombinedReview(reviews, totalChunks, actionableCount, coverageWarn
   const failureWarning = buildChunkFailureWarning(failedChunks, totalChunks);
 
   return [coverageWarning, failureWarning, formattedReview].filter(Boolean).join('\n\n').trim();
+}
+
+function decorateChunkReview(rawReview, chunkFiles, scopeMode, customPatterns) {
+  const review = ConversationalFeedback.postProcess(rawReview);
+  const chunkSecurityFiles = scopeMode === 'full'
+    ? chunkFiles
+    : chunkFiles.filter(file => file.reviewScope === 'delta');
+  const chunkFindings = SecurityCheck.checkSecurity(chunkSecurityFiles, customPatterns);
+  const securityReview = formatSecurityFindingsForReview(chunkFindings);
+  const summaryReview = securityReview ? `${securityReview}\n\n${rawReview}` : rawReview;
+  let decoratedReview = review;
+  if (chunkFindings.length > 0) {
+    const secHeader = '#### Security Findings (static analysis)\n';
+    const secList = chunkFindings.map(f => `- [${f.severity}] ${f.path}:${f.line} - ${f.message}`).join('\n');
+    decoratedReview = `${secHeader}${secList}\n\n${review}`;
+  }
+  return { summaryReview, review: decoratedReview, findings: chunkFindings };
+}
+
+function buildModelRoutingNotice({ deepModel, fastModel, reviews }) {
+  const counts = { deep: 0, fast: 0, escalated: 0, degraded: 0, failed: 0 };
+  for (const review of reviews) {
+    if (!review.success) {
+      counts.failed++;
+    } else if (Object.hasOwn(counts, review.tier)) {
+      counts[review.tier]++;
+    }
+  }
+
+  const parts = [];
+  if (counts.deep > 0) parts.push(`${counts.deep} deep (${deepModel})`);
+  if (counts.fast > 0) parts.push(`${counts.fast} fast (${fastModel})`);
+  if (counts.escalated > 0) parts.push(`${counts.escalated} escalated to ${deepModel} after security signals`);
+  if (counts.degraded > 0) parts.push(`${counts.degraded} fell back to ${fastModel} after rate limiting`);
+  if (counts.failed > 0) parts.push(`${counts.failed} failed`);
+  if (parts.length === 0) return '';
+  return `> [!NOTE]\n> Model routing: ${parts.join(', ')}.`;
 }
 
 function extractActionableSuggestions(reviews) {
@@ -914,6 +952,39 @@ async function reviewChunkWithAdaptiveSplit({
   }
 }
 
+async function reviewOneChunk({
+  apiKey,
+  model,
+  systemPrompt,
+  chunkFiles,
+  chunkIndex,
+  totalChunks,
+  maxChunkSize,
+  apiOptions,
+  scopeMode,
+  customPatterns,
+}) {
+  const rawReview = await reviewChunkWithAdaptiveSplit({
+    apiKey,
+    model,
+    systemPrompt,
+    files: chunkFiles,
+    chunkIndex,
+    totalChunks,
+    maxChunkSize,
+    apiOptions,
+  });
+  const decorated = decorateChunkReview(rawReview, chunkFiles, scopeMode, customPatterns);
+  return {
+    index: chunkIndex,
+    rawReview,
+    summaryReview: decorated.summaryReview,
+    review: decorated.review,
+    success: true,
+    model,
+  };
+}
+
 function parseBoundedInteger(value, fallback, minimum, maximum, inputName) {
   const parsed = Number.parseInt(value, 10);
   if (Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum) {
@@ -1178,7 +1249,11 @@ async function run() {
   await loadActionsToolkit();
   const apiKey = core.getInput('ZAI_API_KEY', { required: true });
   core.setSecret(apiKey);
-  const model = core.getInput('ZAI_MODEL') || 'glm-4.7';
+  const deepModel = core.getInput('ZAI_MODEL') || 'glm-4.7';
+  const fastModel = (core.getInput('ZAI_MODEL_FAST') || '').trim();
+  const twoTierRouting = !!fastModel && fastModel !== deepModel;
+  const modelEscalation = twoTierRouting
+    && (core.getInput('ZAI_MODEL_ESCALATION') || 'true').trim().toLowerCase() !== 'false';
   const systemPrompt = core.getInput('ZAI_SYSTEM_PROMPT');
   const reviewerName = core.getInput('ZAI_REVIEWER_NAME');
   const excludePatterns = core.getInput('EXCLUDE_PATTERNS')
@@ -1257,6 +1332,21 @@ async function run() {
     );
   } else if (modeResolution.labelModes.length === 1) {
     core.info(`Review mode overridden by label: ${modeResolution.mode}.`);
+  }
+
+  const routeResolution = ModelRouter.resolveModelRoute(labels);
+  if (twoTierRouting) {
+    core.info(
+      `Two-tier model routing enabled: deep=${deepModel}, fast=${fastModel}, `
+        + `escalation=${modelEscalation ? 'on' : 'off'}.`
+    );
+    if (routeResolution.labelTiers.length > 1) {
+      core.warning(
+        `Conflicting Z.ai model labels (${routeResolution.labelTiers.join(', ')}); using deep.`
+      );
+    } else if (routeResolution.tier) {
+      core.info(`Model tier overridden by label: ${routeResolution.tier}.`);
+    }
   }
 
   // FeedbackLearning repoId: owner/repo
@@ -1364,37 +1454,104 @@ async function run() {
   const failedChunks = [];
 
   for (let i = 0; i < chunks.length; i++) {
+    let tier = 'deep';
+    let routeSource = 'single';
+    if (twoTierRouting) {
+      if (routeResolution.tier) {
+        tier = routeResolution.tier;
+        routeSource = 'label';
+      } else {
+        const classified = ModelRouter.classifyChunk(chunks[i]);
+        tier = classified.tier;
+        routeSource = 'classifier';
+        if (classified.tier === 'deep') {
+          core.info(`Chunk ${i + 1}/${chunks.length} routed to ${deepModel}: ${classified.reasons.join('; ')}`);
+        }
+      }
+    }
+    const chunkModel = tier === 'deep' ? deepModel : fastModel;
+
+    core.info(`Processing chunk ${i + 1}/${chunks.length} (${chunks[i].length} file section(s)) with ${chunkModel}...`);
     try {
-      core.info(`Processing chunk ${i + 1}/${chunks.length} (${chunks[i].length} file section(s))...`);
-      const rawReview = await reviewChunkWithAdaptiveSplit({
+      const result = await reviewOneChunk({
         apiKey,
-        model,
+        model: chunkModel,
         systemPrompt,
-        files: chunks[i],
+        chunkFiles: chunks[i],
         chunkIndex: i,
         totalChunks: chunks.length,
         maxChunkSize,
         apiOptions,
+        scopeMode: scope.actualMode,
+        customPatterns,
       });
-      const review = ConversationalFeedback.postProcess(rawReview);
-      // Prepend actionable security findings for this chunk
-      const chunkSecurityFiles = scope.actualMode === 'full'
-        ? chunks[i]
-        : chunks[i].filter(file => file.reviewScope === 'delta');
-      const chunkFindings = SecurityCheck.checkSecurity(chunkSecurityFiles, customPatterns);
-      const securityReview = formatSecurityFindingsForReview(chunkFindings);
-      const summaryReview = securityReview ? `${securityReview}\n\n${rawReview}` : rawReview;
-      let reviewWithSecurity = review;
-      if (chunkFindings.length > 0) {
-        const secHeader = '#### Security Findings (static analysis)\n';
-        const secList = chunkFindings.map(f => `- [${f.severity}] ${f.path}:${f.line} - ${f.message}`).join('\n');
-        reviewWithSecurity = `${secHeader}${secList}\n\n${review}`;
-      }
-      reviews.push({ index: i, rawReview, summaryReview, review: reviewWithSecurity, success: true });
+      result.tier = tier;
+      result.labelForced = routeSource === 'label';
+      reviews.push(result);
     } catch (err) {
+      // A classifier-routed deep chunk that hits the API rate limit degrades to
+      // the fast tier rather than failing outright. Label-forced deep chunks
+      // keep their explicit routing and fail normally.
+      if (twoTierRouting && tier === 'deep' && routeSource === 'classifier' && err?.statusCode === 429) {
+        core.warning(`Chunk ${i + 1}/${chunks.length}: ${deepModel} rate-limited; retrying on ${fastModel}.`);
+        try {
+          const degraded = await reviewOneChunk({
+            apiKey,
+            model: fastModel,
+            systemPrompt,
+            chunkFiles: chunks[i],
+            chunkIndex: i,
+            totalChunks: chunks.length,
+            maxChunkSize,
+            apiOptions,
+            scopeMode: scope.actualMode,
+            customPatterns,
+          });
+          degraded.tier = 'degraded';
+          reviews.push(degraded);
+          continue;
+        } catch (degradeErr) {
+          err = degradeErr;
+        }
+      }
       core.warning(`Chunk ${i + 1}/${chunks.length} failed: ${err.message}`);
       failedChunks.push({ index: i, error: err.message });
       reviews.push({ index: i, rawReview: '', review: `**Error reviewing this chunk:** ${err.message}`, error: err.message, success: false });
+    }
+  }
+
+  // Second pass: fast-reviewed chunks that trip security signals are
+  // re-reviewed by the deep model, so risky code is seen by both tiers.
+  // Label-forced fast chunks and chunks that only reached the fast tier
+  // through rate-limit fallback are left alone.
+  if (modelEscalation) {
+    for (const review of reviews) {
+      if (!review.success || review.tier !== 'fast' || review.labelForced) continue;
+      const escalation = ModelRouter.needsDeepReview(
+        chunks[review.index],
+        review.rawReview,
+        customPatterns
+      );
+      if (!escalation.escalate) continue;
+      core.info(`Escalating chunk ${review.index + 1} to ${deepModel}: ${escalation.reasons.join('; ')}`);
+      try {
+        const escalated = await reviewOneChunk({
+          apiKey,
+          model: deepModel,
+          systemPrompt,
+          chunkFiles: chunks[review.index],
+          chunkIndex: review.index,
+          totalChunks: chunks.length,
+          maxChunkSize,
+          apiOptions,
+          scopeMode: scope.actualMode,
+          customPatterns,
+        });
+        escalated.tier = 'escalated';
+        reviews[review.index] = escalated;
+      } catch (err) {
+        core.warning(`Deep escalation of chunk ${review.index + 1} failed; keeping the fast review: ${err.message}`);
+      }
     }
   }
 
@@ -1424,11 +1581,14 @@ async function run() {
     );
   }
 
+  const routingNotice = twoTierRouting
+    ? buildModelRoutingNotice({ deepModel, fastModel, reviews })
+    : '';
   const combinedReview = buildCombinedReview(
     reviews,
     chunks.length,
     actionableSuggestions.length,
-    coverageWarning
+    [coverageWarning, routingNotice].filter(Boolean).join('\n\n')
   );
 
   // Only advance the delta baseline after every selected chunk completed.
@@ -1490,6 +1650,9 @@ module.exports = {
   buildChunkFailureWarning,
   buildCoverageWarning,
   buildCommentBody,
+  buildModelRoutingNotice,
+  decorateChunkReview,
+  reviewOneChunk,
   extractActionableSuggestions,
   formatApiRequestLabel,
   formatChunkMergeSummary,
