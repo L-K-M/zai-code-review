@@ -26,10 +26,11 @@ jobs:
       - name: Code Review
         id: review
         timeout-minutes: 170
-        uses: L-K-M/zai-code-review@v0.0.13
+        uses: L-K-M/zai-code-review@v0.0.14
         with:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-5.3' }}
+          ZAI_MODEL_FAST: ${{ vars.ZAI_MODEL_FAST || 'glm-5.3-flash' }}
           ZAI_REASONING_EFFORT: ${{ vars.ZAI_REASONING_EFFORT || 'high' }}
           ZAI_MAX_OUTPUT_TOKENS: ${{ vars.ZAI_MAX_OUTPUT_TOKENS || '32768' }}
           ZAI_REQUEST_TIMEOUT_SECONDS: ${{ vars.ZAI_REQUEST_TIMEOUT_SECONDS || '900' }}
