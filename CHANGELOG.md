@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.14] - 2026-08-26
+
+### Added
+- Optional two-tier model routing via `ZAI_MODEL_FAST`: chunks are routed per risk
+  by path — CI/automation config, manifests, auth/crypto/session paths, shell
+  scripts, and key material stay on the deep `ZAI_MODEL`, the rest run cheap
+- Security escalation (default on, `ZAI_MODEL_ESCALATION=false` disables):
+  fast-reviewed chunks that trip the static security patterns or flag security
+  issues in their findings are re-reviewed by the deep model
+- `zai-model:deep` and `zai-model:flash` PR labels force a whole-PR tier;
+  conflicting labels resolve to the deep tier, `zai-model:flash` skips the
+  escalation pass
+- Chunks routed to the deep model that exhaust rate-limit retries (HTTP 429)
+  fall back to the fast tier instead of failing
+- The review comment reports how many chunks ran on each tier
+
 ## [0.0.13] - 2026-08-25
 
 ### Added

@@ -145,6 +145,8 @@ jobs:
         with:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-5.3' }}
+          ZAI_MODEL_FAST: ${{ vars.ZAI_MODEL_FAST || '' }}
+          ZAI_MODEL_ESCALATION: ${{ vars.ZAI_MODEL_ESCALATION || 'true' }}
           ZAI_REASONING_EFFORT: ${{ vars.ZAI_REASONING_EFFORT || 'high' }}
           ZAI_MAX_OUTPUT_TOKENS: ${{ vars.ZAI_MAX_OUTPUT_TOKENS || '32768' }}
           ZAI_REQUEST_TIMEOUT_SECONDS: ${{ vars.ZAI_REQUEST_TIMEOUT_SECONDS || '900' }}
@@ -256,6 +258,28 @@ labels choose the widest/safest scope. In hybrid mode,
 `ZAI_UNCHANGED_AUDIT_CHARS` controls the rotating audit budget; set it to `0` to
 disable unchanged sampling.
 
+### Two-tier model routing
+
+Set `ZAI_MODEL_FAST` to a cheaper model to route each review chunk by risk.
+`ZAI_MODEL` stays the deep tier; every chunk whose paths look sensitive — CI and
+automation config, manifests and build files, auth/crypto/session paths, shell
+scripts, key material — runs on the deep model, and the rest run on the fast
+tier. The review comment reports how many chunks ran on each tier.
+
+Two safety nets sit on top:
+
+- **Escalation** (on by default; `ZAI_MODEL_ESCALATION: 'false'` disables): a
+  fast-reviewed chunk is re-reviewed by the deep model when the static security
+  patterns trip on its diff or the fast review itself flags a security issue,
+  so risky code is seen by both models.
+- **Rate-limit fallback**: a chunk routed to the deep model that exhausts its
+  retries with HTTP 429 retries once on the fast tier instead of failing.
+
+Implementers can force a whole-PR tier with `zai-model:deep` or
+`zai-model:flash` labels; conflicting labels resolve to the deep tier. A
+`zai-model:flash` label skips the escalation pass, and a label-forced deep
+chunk fails rather than degrading when rate-limited.
+
 ## 🏗️ How It Works
 
 <details>
@@ -289,7 +313,9 @@ For small PRs, all changes are sent in a single streaming API request. Larger PR
 
 | Variable | Example | Description |
 |----------|---------|-------------|
-| `ZAI_MODEL` | `glm-5.3` | AI model to use |
+| `ZAI_MODEL` | `glm-5.3` | AI model to use (the deep tier when `ZAI_MODEL_FAST` is set) |
+| `ZAI_MODEL_FAST` | `glm-4.5-flash` | Optional cheaper model for low-risk chunks; enables two-tier routing when different from `ZAI_MODEL` |
+| `ZAI_MODEL_ESCALATION` | `true` | Re-review fast-tier chunks with the deep model when they trip security signals |
 | `ZAI_REASONING_EFFORT` | `high` | Reasoning effort for supported models: `low`, `high`, or `max` |
 | `ZAI_MAX_OUTPUT_TOKENS` | `32768` | Maximum output tokens per request |
 | `ZAI_REQUEST_TIMEOUT_SECONDS` | `900` | Inactivity timeout between response bytes; range 60–3600 seconds |

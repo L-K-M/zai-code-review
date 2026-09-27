@@ -11,6 +11,7 @@ const ConversationalFeedback = __nccwpck_require__(9565);
 const InlineSuggestion = __nccwpck_require__(9829);
 const FeedbackLearning = __nccwpck_require__(9161);
 const SecurityCheck = __nccwpck_require__(7432);
+const ModelRouter = __nccwpck_require__(2162);
 const { calculateSimilarity, findSimilarThread } = __nccwpck_require__(8943);
 const {
   normalizeReviewMode,
@@ -432,6 +433,43 @@ function buildCombinedReview(reviews, totalChunks, actionableCount, coverageWarn
   const failureWarning = buildChunkFailureWarning(failedChunks, totalChunks);
 
   return [coverageWarning, failureWarning, formattedReview].filter(Boolean).join('\n\n').trim();
+}
+
+function decorateChunkReview(rawReview, chunkFiles, scopeMode, customPatterns) {
+  const review = ConversationalFeedback.postProcess(rawReview);
+  const chunkSecurityFiles = scopeMode === 'full'
+    ? chunkFiles
+    : chunkFiles.filter(file => file.reviewScope === 'delta');
+  const chunkFindings = SecurityCheck.checkSecurity(chunkSecurityFiles, customPatterns);
+  const securityReview = formatSecurityFindingsForReview(chunkFindings);
+  const summaryReview = securityReview ? `${securityReview}\n\n${rawReview}` : rawReview;
+  let decoratedReview = review;
+  if (chunkFindings.length > 0) {
+    const secHeader = '#### Security Findings (static analysis)\n';
+    const secList = chunkFindings.map(f => `- [${f.severity}] ${f.path}:${f.line} - ${f.message}`).join('\n');
+    decoratedReview = `${secHeader}${secList}\n\n${review}`;
+  }
+  return { summaryReview, review: decoratedReview, findings: chunkFindings };
+}
+
+function buildModelRoutingNotice({ deepModel, fastModel, reviews }) {
+  const counts = { deep: 0, fast: 0, escalated: 0, degraded: 0, failed: 0 };
+  for (const review of reviews) {
+    if (!review.success) {
+      counts.failed++;
+    } else if (Object.hasOwn(counts, review.tier)) {
+      counts[review.tier]++;
+    }
+  }
+
+  const parts = [];
+  if (counts.deep > 0) parts.push(`${counts.deep} deep (${deepModel})`);
+  if (counts.fast > 0) parts.push(`${counts.fast} fast (${fastModel})`);
+  if (counts.escalated > 0) parts.push(`${counts.escalated} escalated to ${deepModel} after security signals`);
+  if (counts.degraded > 0) parts.push(`${counts.degraded} fell back to ${fastModel} after rate limiting`);
+  if (counts.failed > 0) parts.push(`${counts.failed} failed`);
+  if (parts.length === 0) return '';
+  return `> [!NOTE]\n> Model routing: ${parts.join(', ')}.`;
 }
 
 function extractActionableSuggestions(reviews) {
@@ -921,6 +959,39 @@ async function reviewChunkWithAdaptiveSplit({
   }
 }
 
+async function reviewOneChunk({
+  apiKey,
+  model,
+  systemPrompt,
+  chunkFiles,
+  chunkIndex,
+  totalChunks,
+  maxChunkSize,
+  apiOptions,
+  scopeMode,
+  customPatterns,
+}) {
+  const rawReview = await reviewChunkWithAdaptiveSplit({
+    apiKey,
+    model,
+    systemPrompt,
+    files: chunkFiles,
+    chunkIndex,
+    totalChunks,
+    maxChunkSize,
+    apiOptions,
+  });
+  const decorated = decorateChunkReview(rawReview, chunkFiles, scopeMode, customPatterns);
+  return {
+    index: chunkIndex,
+    rawReview,
+    summaryReview: decorated.summaryReview,
+    review: decorated.review,
+    success: true,
+    model,
+  };
+}
+
 function parseBoundedInteger(value, fallback, minimum, maximum, inputName) {
   const parsed = Number.parseInt(value, 10);
   if (Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum) {
@@ -1185,7 +1256,11 @@ async function run() {
   await loadActionsToolkit();
   const apiKey = core.getInput('ZAI_API_KEY', { required: true });
   core.setSecret(apiKey);
-  const model = core.getInput('ZAI_MODEL') || 'glm-4.7';
+  const deepModel = core.getInput('ZAI_MODEL') || 'glm-4.7';
+  const fastModel = (core.getInput('ZAI_MODEL_FAST') || '').trim();
+  const twoTierRouting = !!fastModel && fastModel !== deepModel;
+  const modelEscalation = twoTierRouting
+    && (core.getInput('ZAI_MODEL_ESCALATION') || 'true').trim().toLowerCase() !== 'false';
   const systemPrompt = core.getInput('ZAI_SYSTEM_PROMPT');
   const reviewerName = core.getInput('ZAI_REVIEWER_NAME');
   const excludePatterns = core.getInput('EXCLUDE_PATTERNS')
@@ -1264,6 +1339,21 @@ async function run() {
     );
   } else if (modeResolution.labelModes.length === 1) {
     core.info(`Review mode overridden by label: ${modeResolution.mode}.`);
+  }
+
+  const routeResolution = ModelRouter.resolveModelRoute(labels);
+  if (twoTierRouting) {
+    core.info(
+      `Two-tier model routing enabled: deep=${deepModel}, fast=${fastModel}, `
+        + `escalation=${modelEscalation ? 'on' : 'off'}.`
+    );
+    if (routeResolution.labelTiers.length > 1) {
+      core.warning(
+        `Conflicting Z.ai model labels (${routeResolution.labelTiers.join(', ')}); using deep.`
+      );
+    } else if (routeResolution.tier) {
+      core.info(`Model tier overridden by label: ${routeResolution.tier}.`);
+    }
   }
 
   // FeedbackLearning repoId: owner/repo
@@ -1371,37 +1461,104 @@ async function run() {
   const failedChunks = [];
 
   for (let i = 0; i < chunks.length; i++) {
+    let tier = 'deep';
+    let routeSource = 'single';
+    if (twoTierRouting) {
+      if (routeResolution.tier) {
+        tier = routeResolution.tier;
+        routeSource = 'label';
+      } else {
+        const classified = ModelRouter.classifyChunk(chunks[i]);
+        tier = classified.tier;
+        routeSource = 'classifier';
+        if (classified.tier === 'deep') {
+          core.info(`Chunk ${i + 1}/${chunks.length} routed to ${deepModel}: ${classified.reasons.join('; ')}`);
+        }
+      }
+    }
+    const chunkModel = tier === 'deep' ? deepModel : fastModel;
+
+    core.info(`Processing chunk ${i + 1}/${chunks.length} (${chunks[i].length} file section(s)) with ${chunkModel}...`);
     try {
-      core.info(`Processing chunk ${i + 1}/${chunks.length} (${chunks[i].length} file section(s))...`);
-      const rawReview = await reviewChunkWithAdaptiveSplit({
+      const result = await reviewOneChunk({
         apiKey,
-        model,
+        model: chunkModel,
         systemPrompt,
-        files: chunks[i],
+        chunkFiles: chunks[i],
         chunkIndex: i,
         totalChunks: chunks.length,
         maxChunkSize,
         apiOptions,
+        scopeMode: scope.actualMode,
+        customPatterns,
       });
-      const review = ConversationalFeedback.postProcess(rawReview);
-      // Prepend actionable security findings for this chunk
-      const chunkSecurityFiles = scope.actualMode === 'full'
-        ? chunks[i]
-        : chunks[i].filter(file => file.reviewScope === 'delta');
-      const chunkFindings = SecurityCheck.checkSecurity(chunkSecurityFiles, customPatterns);
-      const securityReview = formatSecurityFindingsForReview(chunkFindings);
-      const summaryReview = securityReview ? `${securityReview}\n\n${rawReview}` : rawReview;
-      let reviewWithSecurity = review;
-      if (chunkFindings.length > 0) {
-        const secHeader = '#### Security Findings (static analysis)\n';
-        const secList = chunkFindings.map(f => `- [${f.severity}] ${f.path}:${f.line} - ${f.message}`).join('\n');
-        reviewWithSecurity = `${secHeader}${secList}\n\n${review}`;
-      }
-      reviews.push({ index: i, rawReview, summaryReview, review: reviewWithSecurity, success: true });
+      result.tier = tier;
+      result.labelForced = routeSource === 'label';
+      reviews.push(result);
     } catch (err) {
+      // A classifier-routed deep chunk that hits the API rate limit degrades to
+      // the fast tier rather than failing outright. Label-forced deep chunks
+      // keep their explicit routing and fail normally.
+      if (twoTierRouting && tier === 'deep' && routeSource === 'classifier' && err?.statusCode === 429) {
+        core.warning(`Chunk ${i + 1}/${chunks.length}: ${deepModel} rate-limited; retrying on ${fastModel}.`);
+        try {
+          const degraded = await reviewOneChunk({
+            apiKey,
+            model: fastModel,
+            systemPrompt,
+            chunkFiles: chunks[i],
+            chunkIndex: i,
+            totalChunks: chunks.length,
+            maxChunkSize,
+            apiOptions,
+            scopeMode: scope.actualMode,
+            customPatterns,
+          });
+          degraded.tier = 'degraded';
+          reviews.push(degraded);
+          continue;
+        } catch (degradeErr) {
+          err = degradeErr;
+        }
+      }
       core.warning(`Chunk ${i + 1}/${chunks.length} failed: ${err.message}`);
       failedChunks.push({ index: i, error: err.message });
       reviews.push({ index: i, rawReview: '', review: `**Error reviewing this chunk:** ${err.message}`, error: err.message, success: false });
+    }
+  }
+
+  // Second pass: fast-reviewed chunks that trip security signals are
+  // re-reviewed by the deep model, so risky code is seen by both tiers.
+  // Label-forced fast chunks and chunks that only reached the fast tier
+  // through rate-limit fallback are left alone.
+  if (modelEscalation) {
+    for (const review of reviews) {
+      if (!review.success || review.tier !== 'fast' || review.labelForced) continue;
+      const escalation = ModelRouter.needsDeepReview(
+        chunks[review.index],
+        review.rawReview,
+        customPatterns
+      );
+      if (!escalation.escalate) continue;
+      core.info(`Escalating chunk ${review.index + 1} to ${deepModel}: ${escalation.reasons.join('; ')}`);
+      try {
+        const escalated = await reviewOneChunk({
+          apiKey,
+          model: deepModel,
+          systemPrompt,
+          chunkFiles: chunks[review.index],
+          chunkIndex: review.index,
+          totalChunks: chunks.length,
+          maxChunkSize,
+          apiOptions,
+          scopeMode: scope.actualMode,
+          customPatterns,
+        });
+        escalated.tier = 'escalated';
+        reviews[review.index] = escalated;
+      } catch (err) {
+        core.warning(`Deep escalation of chunk ${review.index + 1} failed; keeping the fast review: ${err.message}`);
+      }
     }
   }
 
@@ -1431,11 +1588,14 @@ async function run() {
     );
   }
 
+  const routingNotice = twoTierRouting
+    ? buildModelRoutingNotice({ deepModel, fastModel, reviews })
+    : '';
   const combinedReview = buildCombinedReview(
     reviews,
     chunks.length,
     actionableSuggestions.length,
-    coverageWarning
+    [coverageWarning, routingNotice].filter(Boolean).join('\n\n')
   );
 
   // Only advance the delta baseline after every selected chunk completed.
@@ -1497,6 +1657,9 @@ module.exports = {
   buildChunkFailureWarning,
   buildCoverageWarning,
   buildCommentBody,
+  buildModelRoutingNotice,
+  decorateChunkReview,
+  reviewOneChunk,
   extractActionableSuggestions,
   formatApiRequestLabel,
   formatChunkMergeSummary,
@@ -2292,6 +2455,141 @@ class InlineSuggestion {
 }
 
 module.exports = InlineSuggestion;
+
+
+/***/ }),
+
+/***/ 2162:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const SecurityCheck = __nccwpck_require__(7432);
+
+// Routes each review chunk to a deep or fast model tier, and decides which
+// fast-reviewed chunks get re-reviewed by the deep model.
+//
+// The two mechanisms are deliberately layered:
+// - Up-front routing is path-based only. Paths that carry security or
+//   supply-chain weight (CI plumbing, manifests, auth/crypto, shell scripts,
+//   key material) go straight to the deep model.
+// - Escalation is the second pass. A fast-reviewed chunk is re-reviewed by the
+//   deep model when the static security patterns trip on its diff or the fast
+//   review itself flags a security issue, so both models see risky code while
+//   cost stays proportional to risk.
+
+const MODEL_LABEL_PREFIX = 'zai-model:';
+const MODEL_TIERS = new Set(['deep', 'fast']);
+const LABEL_TIER_ALIASES = { flash: 'fast' };
+
+// Whole-path rules. Order matters only for the logged reason.
+const DEEP_PATH_RULES = [
+  { pattern: /^\.github\//i, reason: 'CI/automation configuration' },
+  { pattern: /(^|\/)(scripts?|bin|tools?|ci|deploy|infra|terraform|k8s|helm|packaging)\//i, reason: 'automation or deployment path' },
+  { pattern: /\.(sh|bash|zsh|ps1|bat|cmd)$/i, reason: 'shell script' },
+  { pattern: /\.(pem|key|keystore|jks|p12|pfx|crt|cer|der|gpg|asc)$/i, reason: 'key or certificate material' },
+  { pattern: /(^|\/)\.env(\.|$)/i, reason: 'environment file' },
+  {
+    pattern: /(^|\/)(dockerfile[^/]*|docker-compose[^/]*\.ya?ml|makefile|cmakelists\.txt|id_rsa[^/]*|id_ed25519[^/]*|authorized_keys|known_hosts|codeowners|dependabot\.ya?ml)$/i,
+    reason: 'build, container, or access-control file',
+  },
+  {
+    pattern: /(^|\/)(package\.json|pubspec\.yaml|cargo\.toml|go\.mod|go\.sum|requirements[^/]*\.txt|pipfile(\.lock)?|gemfile(\.lock)?|podfile(\.lock)?|pom\.xml|build\.gradle(\.kts)?|settings\.gradle(\.kts)?|gradle\.properties|gradle-wrapper\.properties|proguard-rules\.pro|androidmanifest\.xml|analysis_options\.yaml|packages\.config|\.npmrc|\.yarnrc)$/i,
+    reason: 'manifest or build configuration',
+  },
+];
+
+// Path components whose names carry security weight. Matched on individual
+// path segments so `src/session/store.js` and `auth/token.dart` route deep
+// while `design/assignments.md` does not.
+const DEEP_SEGMENT_PATTERN =
+  /(^|[^a-z])(auth|oauth|jwt|crypto|crypt|tls|ssl|cert|certificate|keystore|keychain|keyring|sign|signing|secret|credential|token|password|passwd|permission|security|vault|encrypt|decrypt|session|payment|billing|invoice)([^a-z]|$)/i;
+
+// Security signals in a fast review's own output that promote the chunk to a
+// deep re-review. Over-matching only costs one extra request, so this errs
+// toward escalation.
+const ESCALATION_KEYWORD_PATTERN =
+  /\b(vulnerab\w*|exploit\w*|injection\b|insecure\b|xss\b|csrf\b|ssrf\b|rce\b|xxe\b|remote code execution|sql injection|command injection|path traversal|directory traversal|hardcoded (secret|password|credential|key|token)|api[_ -]?key|secret key|credentials?\b|token leak|cleartext|plaintext (password|secret|token|key)|privilege escalation|unauthorized access|auth(entication|orization)? bypass|unsanitized|unescaped|insecure deserializ\w*|man[- ]in[- ]the[- ]middle|\bmitm\b|weak crypto\w*|insecure random|predictable (token|secret|id)|md5|sha-?1\b|buffer overflow|out-of-bounds|use-after-free|integer overflow|race condition|toctou|open redirect|header injection|prototype pollution|reentrancy|supply[- ]chain)/i;
+
+function normalizeLabelNames(labels = []) {
+  return labels
+    .map(label => (typeof label === 'string' ? label : label?.name))
+    .filter(Boolean)
+    .map(label => label.trim().toLowerCase());
+}
+
+// Parses zai-model:deep / zai-model:flash PR labels into a whole-PR tier
+// override, mirroring resolveReviewMode's zai-review:* convention. Conflicting
+// labels resolve to the deeper review.
+function resolveModelRoute(labels = []) {
+  const labelTiers = new Set(
+    normalizeLabelNames(labels)
+      .filter(label => label.startsWith(MODEL_LABEL_PREFIX))
+      .map(label => label.slice(MODEL_LABEL_PREFIX.length))
+      .map(tier => LABEL_TIER_ALIASES[tier] || tier)
+      .filter(tier => MODEL_TIERS.has(tier))
+  );
+  const tier = labelTiers.has('deep') ? 'deep' : labelTiers.has('fast') ? 'fast' : null;
+  return { tier, labelTiers: [...labelTiers] };
+}
+
+function deepPathReason(filename) {
+  for (const rule of DEEP_PATH_RULES) {
+    if (rule.pattern.test(filename)) {
+      return rule.reason;
+    }
+  }
+
+  const securitySegment = filename
+    .split('/')
+    .find(segment => DEEP_SEGMENT_PATTERN.test(segment));
+  if (securitySegment) {
+    return `security-sensitive path segment "${securitySegment}"`;
+  }
+
+  return '';
+}
+
+// Classifies one chunk by file paths only. Diff content is checked later by
+// the escalation pass, so pattern-tripping chunks are seen by both models.
+function classifyChunk(files = []) {
+  const reasons = [];
+  for (const file of files) {
+    const filename = file?.filename || '';
+    if (!filename) continue;
+    const reason = deepPathReason(filename);
+    if (reason) {
+      reasons.push(`${filename} (${reason})`);
+    }
+  }
+  return { tier: reasons.length > 0 ? 'deep' : 'fast', reasons };
+}
+
+// Decides whether a chunk the fast model already reviewed should be
+// re-reviewed by the deep model: static security findings on the chunk's diff,
+// or security language in the fast review's own findings.
+function needsDeepReview(files = [], rawReview = '', customPatterns = []) {
+  const reasons = [];
+
+  const findings = SecurityCheck.checkSecurity(files, customPatterns);
+  if (findings.length > 0) {
+    reasons.push(`${findings.length} static security finding(s)`);
+  }
+
+  if (ESCALATION_KEYWORD_PATTERN.test(rawReview || '')) {
+    reasons.push('security issue flagged in fast review findings');
+  }
+
+  return { escalate: reasons.length > 0, reasons };
+}
+
+module.exports = {
+  MODEL_LABEL_PREFIX,
+  resolveModelRoute,
+  classifyChunk,
+  needsDeepReview,
+  DEEP_PATH_RULES,
+  DEEP_SEGMENT_PATTERN,
+  ESCALATION_KEYWORD_PATTERN,
+};
 
 
 /***/ }),

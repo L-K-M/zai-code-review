@@ -5,9 +5,17 @@ inputs:
     description: "Z.ai API key"
     required: true
   ZAI_MODEL:
-    description: "Z.ai AI model"
+    description: "Z.ai AI model (the deep tier when ZAI_MODEL_FAST is set)"
     required: false
     default: "glm-4.7"
+  ZAI_MODEL_FAST:
+    description: "Optional cheaper model for low-risk chunks; when different from ZAI_MODEL, each chunk is routed by path risk"
+    required: false
+    default: ""
+  ZAI_MODEL_ESCALATION:
+    description: "Re-review fast-tier chunks with the deep model when they trip security signals (requires ZAI_MODEL_FAST)"
+    required: false
+    default: "true"
   ZAI_REASONING_EFFORT:
     description: "Reasoning effort for supported models: low, high, or max"
     required: false
