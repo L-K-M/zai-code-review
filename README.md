@@ -275,6 +275,26 @@ Two safety nets sit on top:
 - **Rate-limit fallback**: a chunk routed to the deep model that exhausts its
   retries with HTTP 429 retries once on the fast tier instead of failing.
 
+### Fallback provider
+
+Set `FALLBACK_API_KEY`, `FALLBACK_API_URL` and `FALLBACK_MODEL` to an
+OpenAI-compatible streaming chat completions provider, such as Xiaomi MiMo:
+
+```yaml
+          FALLBACK_API_KEY: ${{ secrets.MIMO_API_KEY }}
+          FALLBACK_API_URL: https://token-plan-sgp.xiaomimimo.com/v1/chat/completions
+          FALLBACK_MODEL: mimo-v2.6-pro
+```
+
+A chunk that still fails on Z.ai after its retries (and after the rate-limit
+fallback above) is reviewed by the fallback model with the same prompt and
+output limits. Once the fallback has covered a Z.ai rate limit, later chunks in
+that run try the fallback first and keep Z.ai as their backstop. The review
+comment counts the chunks the fallback reviewed. Without a key the action
+behaves as before; a key without an https URL or a model disables the fallback
+with a warning. The fallback provider receives the same diff and prompt as
+Z.ai, so enable it only where sending the code to that provider is acceptable.
+
 Implementers can force a whole-PR tier with `zai-model:deep` or
 `zai-model:flash` labels; conflicting labels resolve to the deep tier. A
 `zai-model:flash` label skips the escalation pass, and a label-forced deep
@@ -316,6 +336,8 @@ For small PRs, all changes are sent in a single streaming API request. Larger PR
 | `ZAI_MODEL` | `glm-5.3` | AI model to use (the deep tier when `ZAI_MODEL_FAST` is set) |
 | `ZAI_MODEL_FAST` | `glm-4.5-flash` | Optional cheaper model for low-risk chunks; enables two-tier routing when different from `ZAI_MODEL` |
 | `ZAI_MODEL_ESCALATION` | `true` | Re-review fast-tier chunks with the deep model when they trip security signals |
+| `FALLBACK_API_URL` | `https://token-plan-sgp.xiaomimimo.com/v1/chat/completions` | OpenAI-compatible fallback provider for chunks Z.ai fails on; pass `FALLBACK_API_KEY` from a secret |
+| `FALLBACK_MODEL` | `mimo-v2.6-pro` | Fallback provider model |
 | `ZAI_REASONING_EFFORT` | `high` | Reasoning effort for supported models: `low`, `high`, or `max` |
 | `ZAI_MAX_OUTPUT_TOKENS` | `32768` | Maximum output tokens per request |
 | `ZAI_REQUEST_TIMEOUT_SECONDS` | `900` | Inactivity timeout between response bytes; range 60–3600 seconds |
