@@ -26,9 +26,14 @@ jobs:
       - name: Code Review
         id: review
         timeout-minutes: 170
-        uses: L-K-M/zai-code-review@v0.0.14
+        uses: L-K-M/zai-code-review@v0.0.15
         with:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          # Xiaomi MiMo reviews the chunks Z.ai still fails on (rate limits,
+          # outages). An empty MIMO_API_KEY secret disables the fallback.
+          FALLBACK_API_KEY: ${{ secrets.MIMO_API_KEY }}
+          FALLBACK_API_URL: https://token-plan-sgp.xiaomimimo.com/v1/chat/completions
+          FALLBACK_MODEL: mimo-v2.6-pro
           ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-5.3' }}
           ZAI_MODEL_FAST: ${{ vars.ZAI_MODEL_FAST || 'glm-5.3-flash' }}
           ZAI_REASONING_EFFORT: ${{ vars.ZAI_REASONING_EFFORT || 'high' }}
