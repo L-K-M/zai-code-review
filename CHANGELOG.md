@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.15] - 2026-10-20
+
+### Added
+- Optional OpenAI-compatible fallback provider (`FALLBACK_API_KEY`,
+  `FALLBACK_API_URL`, `FALLBACK_MODEL`), such as Xiaomi MiMo: a chunk that
+  still fails on Z.ai after its retries and the rate-limit fallback is reviewed
+  by the fallback model instead of failing
+- After the fallback covers a Z.ai rate limit, later chunks in the run try the
+  fallback first and keep Z.ai as their backstop
+- The review comment counts chunks the fallback reviewed
+
 ## [0.0.14] - 2026-08-26
 
 ### Added

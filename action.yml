@@ -16,6 +16,18 @@ inputs:
     description: "Re-review fast-tier chunks with the deep model when they trip security signals (requires ZAI_MODEL_FAST)"
     required: false
     default: "true"
+  FALLBACK_API_KEY:
+    description: "Optional API key for an OpenAI-compatible fallback provider that reviews chunks Z.ai fails on; empty disables the fallback"
+    required: false
+    default: ""
+  FALLBACK_API_URL:
+    description: "https chat completions URL of the fallback provider (for example https://token-plan-sgp.xiaomimimo.com/v1/chat/completions)"
+    required: false
+    default: ""
+  FALLBACK_MODEL:
+    description: "Fallback provider model (for example mimo-v2.6-pro)"
+    required: false
+    default: ""
   ZAI_REASONING_EFFORT:
     description: "Reasoning effort for supported models: low, high, or max"
     required: false

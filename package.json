@@ -1,6 +1,6 @@
 {
   "name": "zai-code-review",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "description": "AI-powered code review GitHub Action using Z.ai",
   "main": "dist/index.js",
   "engines": {
@@ -33,17 +33,30 @@
       "sourceType": "script"
     },
     "rules": {
-      "indent": ["error", 2],
-      "quotes": ["error", "single"],
-      "semi": ["error", "always"],
+      "indent": [
+        "error",
+        2
+      ],
+      "quotes": [
+        "error",
+        "single"
+      ],
+      "semi": [
+        "error",
+        "always"
+      ],
       "no-unused-vars": "warn",
       "no-console": "off"
     }
   },
   "jest": {
     "testEnvironment": "node",
-    "testMatch": ["**/test/**/*.test.js"],
-    "collectCoverageFrom": ["src/**/*.js"],
+    "testMatch": [
+      "**/test/**/*.test.js"
+    ],
+    "collectCoverageFrom": [
+      "src/**/*.js"
+    ],
     "coverageDirectory": "coverage"
   }
 }
