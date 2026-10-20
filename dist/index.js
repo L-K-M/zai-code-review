@@ -631,7 +631,23 @@ function getStreamCompletionError({ sawDone, finishReason, content, completionSu
   return null;
 }
 
+// Errors name the API that failed: apiOptions.errorPrefix replaces the Z.ai
+// prefix for fallback requests, so logs and the PR comment attribute them.
 function callZaiApi(apiKey, model, systemPrompt, prompt, apiOptions = {}) {
+  const request = sendChatCompletion(apiKey, model, systemPrompt, prompt, apiOptions);
+  const prefix = apiOptions.errorPrefix;
+  if (!prefix) {
+    return request;
+  }
+  return request.catch(error => {
+    if (error?.message?.startsWith(ERR_PREFIX)) {
+      error.message = `${prefix}${error.message.slice(ERR_PREFIX.length)}`;
+    }
+    throw error;
+  });
+}
+
+function sendChatCompletion(apiKey, model, systemPrompt, prompt, apiOptions = {}) {
   return new Promise((resolve, reject) => {
     const requestStartedAt = Date.now();
     const requestTimeoutMs = apiOptions.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS;
@@ -962,6 +978,7 @@ async function reviewChunkWithAdaptiveSplit({
 }
 
 const FALLBACK_TIER = 'fallback';
+const FALLBACK_ERR_PREFIX = 'Fallback API: ';
 
 // An optional OpenAI-compatible provider for chunks Z.ai cannot review. All
 // three inputs are required; a missing key disables it silently, anything
@@ -1016,7 +1033,7 @@ async function reviewChunkWithFallbacks({
       model: fallback.model,
       tier: FALLBACK_TIER,
       apiKey: fallback.apiKey,
-      apiOptions: { ...primary.apiOptions, endpoint: fallback.apiUrl },
+      apiOptions: { ...primary.apiOptions, endpoint: fallback.apiUrl, errorPrefix: FALLBACK_ERR_PREFIX },
     }]
     : [];
   const attempts = skipPrimary && fallback
@@ -1405,14 +1422,15 @@ async function run() {
     maxOutputTokens,
     requestTimeoutMs: requestTimeoutSeconds * 1000,
   };
+  const fallbackApiKey = core.getInput('FALLBACK_API_KEY');
+  if (fallbackApiKey.trim()) {
+    core.setSecret(fallbackApiKey.trim());
+  }
   const fallback = parseFallbackProvider({
-    apiKey: core.getInput('FALLBACK_API_KEY'),
+    apiKey: fallbackApiKey,
     apiUrl: core.getInput('FALLBACK_API_URL'),
     model: core.getInput('FALLBACK_MODEL'),
   });
-  if (fallback) {
-    core.setSecret(fallback.apiKey);
-  }
   const token = core.getInput('GITHUB_TOKEN');
   core.setSecret(token);
   let threadSimilarityThreshold = parseFloat(core.getInput('ZAI_THREAD_SIMILARITY_THRESHOLD'));
@@ -1606,12 +1624,13 @@ async function run() {
       skipPrimary: primaryUnavailable,
       label: `Chunk ${i + 1}/${chunks.length}`,
     });
+    // A Z.ai rate limit usually lasts the plan window: unless Z.ai itself
+    // recovered (the fast tier answered), later chunks try the fallback first.
+    const zaiAnswered = outcome.result && outcome.result.tier !== FALLBACK_TIER;
+    primaryUnavailable ||= !!fallback && outcome.primaryRateLimited && !zaiAnswered;
     if (outcome.result) {
       outcome.result.labelForced = routeSource === 'label';
       reviews.push(outcome.result);
-      // A Z.ai rate limit usually lasts the plan window: once the fallback
-      // covers for one, send later chunks to the fallback first.
-      primaryUnavailable ||= outcome.primaryRateLimited && outcome.result.tier === FALLBACK_TIER;
       continue;
     }
 
@@ -1624,7 +1643,9 @@ async function run() {
   // re-reviewed by the deep model, so risky code is seen by both tiers.
   // Label-forced fast chunks and chunks that only reached the fast tier
   // through rate-limit fallback are left alone.
-  if (modelEscalation) {
+  if (modelEscalation && primaryUnavailable) {
+    core.info('Skipping deep escalation: Z.ai was rate-limited during this run.');
+  } else if (modelEscalation) {
     for (const review of reviews) {
       if (!review.success || review.tier !== 'fast' || review.labelForced) continue;
       const escalation = ModelRouter.needsDeepReview(

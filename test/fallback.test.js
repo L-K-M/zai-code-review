@@ -99,7 +99,7 @@ describe('reviewChunkWithFallbacks', () => {
       { model: 'glm-5.3-flash', apiKey: 'zai-key', endpoint: undefined },
       { model: 'mimo-v2.6-pro', apiKey: 'fallback-key', endpoint: FALLBACK.apiUrl },
     ]);
-    expect(reviewChunk.mock.calls[2][0].apiOptions.maxOutputTokens).toBe(98304);
+    expect(reviewChunk.mock.calls[2][0].apiOptions).toMatchObject({ maxOutputTokens: 98304, errorPrefix: 'Fallback API: ' });
   });
 
   test('skips the fast model when the deep failure was not a rate limit', async () => {
@@ -130,6 +130,16 @@ describe('reviewChunkWithFallbacks', () => {
     expect(outcome.error).toBe(
       'glm-5.3: Z.ai API: HTTP 429.; glm-5.3-flash: Z.ai API: HTTP 429.; mimo-v2.6-pro: Z.ai API: HTTP 401.'
     );
+    expect(outcome.primaryRateLimited).toBe(true);
+  });
+
+  test('a rate-limited fallback does not count as a Z.ai rate limit', async () => {
+    const { reviewChunk } = fakeReviewer({ 'mimo-v2.6-pro': httpError(429), 'glm-5.3': 'deep review' });
+    const outcome = await reviewChunkWithFallbacks({
+      chunk, primary: primary(), fallback: FALLBACK, skipPrimary: true, label: 'Chunk 2/2', reviewChunk,
+    });
+    expect(outcome.result.tier).toBe('deep');
+    expect(outcome.primaryRateLimited).toBe(false);
   });
 
   test('keeps the previous behavior without a fallback', async () => {
@@ -193,5 +203,27 @@ describe('callZaiApi endpoint', () => {
       method: 'POST',
     });
     expect(options.headers.Authorization).toBe('Bearer fallback-key');
+  });
+
+  test('labels fallback errors with the fallback prefix', async () => {
+    https.request.mockImplementation((_requestOptions, onResponse) => {
+      const request = new EventEmitter();
+      request.setTimeout = jest.fn();
+      request.write = jest.fn();
+      request.destroy = jest.fn();
+      request.end = () => {
+        const response = new EventEmitter();
+        response.statusCode = 503;
+        response.headers = {};
+        onResponse(response);
+        response.emit('end');
+      };
+      return request;
+    });
+
+    await expect(callZaiApi('fallback-key', 'mimo-v2.6-pro', 'system', 'prompt', {
+      endpoint: FALLBACK.apiUrl,
+      errorPrefix: 'Fallback API: ',
+    })).rejects.toMatchObject({ message: 'Fallback API: HTTP 503.', statusCode: 503 });
   });
 });
