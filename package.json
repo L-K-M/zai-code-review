@@ -33,30 +33,17 @@
       "sourceType": "script"
     },
     "rules": {
-      "indent": [
-        "error",
-        2
-      ],
-      "quotes": [
-        "error",
-        "single"
-      ],
-      "semi": [
-        "error",
-        "always"
-      ],
+      "indent": ["error", 2],
+      "quotes": ["error", "single"],
+      "semi": ["error", "always"],
       "no-unused-vars": "warn",
       "no-console": "off"
     }
   },
   "jest": {
     "testEnvironment": "node",
-    "testMatch": [
-      "**/test/**/*.test.js"
-    ],
-    "collectCoverageFrom": [
-      "src/**/*.js"
-    ],
+    "testMatch": ["**/test/**/*.test.js"],
+    "collectCoverageFrom": ["src/**/*.js"],
     "coverageDirectory": "coverage"
   }
 }

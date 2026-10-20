@@ -989,8 +989,11 @@ function parseFallbackProvider({ apiKey, apiUrl, model }) {
   } catch {
     url = null;
   }
-  if (!fallbackModel || url?.protocol !== 'https:') {
-    core?.warning('FALLBACK_API_KEY is set, but FALLBACK_MODEL and an https FALLBACK_API_URL are also required; the fallback is disabled.');
+  const problems = [];
+  if (url?.protocol !== 'https:') problems.push('FALLBACK_API_URL must be an https URL');
+  if (!fallbackModel) problems.push('FALLBACK_MODEL is empty');
+  if (problems.length > 0) {
+    core?.warning(`FALLBACK_API_KEY is set, but ${problems.join(' and ')}; the fallback is disabled.`);
     return null;
   }
   return { apiKey: key, apiUrl: url.toString(), model: fallbackModel };
@@ -1614,13 +1617,14 @@ async function run() {
         degradeModel: twoTierRouting && tier === 'deep' && routeSource === 'classifier' ? fastModel : '',
       },
       fallback,
-      skipPrimary: primaryUnavailable,
+      // A label pins the Z.ai tier, so those chunks keep Z.ai first.
+      skipPrimary: primaryUnavailable && routeSource !== 'label',
       label: `Chunk ${i + 1}/${chunks.length}`,
     });
-    // A Z.ai rate limit usually lasts the plan window: unless Z.ai itself
-    // recovered (the fast tier answered), later chunks try the fallback first.
-    const zaiAnswered = outcome.result && outcome.result.tier !== FALLBACK_TIER;
-    primaryUnavailable ||= !!fallback && outcome.primaryRateLimited && !zaiAnswered;
+    // A Z.ai rate limit usually lasts the plan window, so later chunks try the
+    // fallback first; any Z.ai answer, including as a backstop, ends that.
+    const zaiAnswered = !!outcome.result && outcome.result.tier !== FALLBACK_TIER;
+    primaryUnavailable = !!fallback && !zaiAnswered && (primaryUnavailable || outcome.primaryRateLimited);
     if (outcome.result) {
       outcome.result.labelForced = routeSource === 'label';
       reviews.push(outcome.result);
