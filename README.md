@@ -292,7 +292,8 @@ output limits. Once the fallback has covered a Z.ai rate limit, later chunks in
 that run try the fallback first and keep Z.ai as their backstop. The review
 comment counts the chunks the fallback reviewed. Without a key the action
 behaves as before; a key without an https URL or a model disables the fallback
-with a warning.
+with a warning. The fallback provider receives the same diff and prompt as
+Z.ai, so enable it only where sending the code to that provider is acceptable.
 
 Implementers can force a whole-PR tier with `zai-model:deep` or
 `zai-model:flash` labels; conflicting labels resolve to the deep tier. A

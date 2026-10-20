@@ -3,6 +3,10 @@ const { EventEmitter } = require('events');
 jest.mock('https', () => ({ request: jest.fn() }));
 const https = require('https');
 
+afterEach(() => {
+  https.request.mockReset();
+});
+
 const {
   buildModelRoutingNotice,
   callZaiApi,
