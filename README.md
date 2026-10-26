@@ -426,3 +426,16 @@ The action prevents duplicate comments through:
 - [AGENTS.md](AGENTS.md) - Development documentation for AI assistants
 - [CHANGELOG.md](CHANGELOG.md) - Version history
 - [LICENSE](LICENSE) - MIT License
+
+## License
+
+Z.ai Code Review is a fork of
+[bizzkoot/zai-code-review](https://github.com/bizzkoot/zai-code-review),
+which forks [tarmojussila/zai-code-review](https://github.com/tarmojussila/zai-code-review).
+The action's own code, including the forks' changes, is released under the
+[MIT License](LICENSE) (Copyright (c) 2026 Tarmo Jussila). The committed
+bundle in `dist/` includes third-party npm packages (the GitHub Actions
+toolkit, Octokit, undici with its embedded llhttp, and others) and the
+webpack runtime, which keep their own MIT, ISC or Apache-2.0 licenses.
+Their notices ship in `dist/licenses.txt`, which `npm run build`
+regenerates.

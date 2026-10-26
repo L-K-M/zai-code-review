@@ -26,6 +26,14 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
+      # The tagged tree is the artifact; never tag a bundle without its notices.
+      - name: Verify bundled notices
+        run: |
+          test -s dist/licenses.txt
+          grep -q '^Third-party notices for zai-code-review$' dist/licenses.txt
+          grep -q 'Copyright Fedor Indutny' dist/licenses.txt
+          grep -q 'Copyright JS Foundation and other contributors' dist/licenses.txt
+
       - name: Read release metadata
         id: release
         shell: bash

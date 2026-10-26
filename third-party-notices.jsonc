@@ -1,0 +1,25 @@
+{
+  // Overrides for scripts/third-party-notices.mjs, which writes
+  // dist/licenses.txt from ncc's module graph (`npm run build`).
+  // Paths are relative to this file.
+  "components": [
+    {
+      "name": "webpack",
+      "version": "5.94.0",
+      "license": "MIT",
+      "url": "https://github.com/webpack/webpack",
+      "files": ["licenses/webpack-LICENSE"],
+      "modules": ["webpack/runtime/"],
+      "reason": "@vercel/ncc 0.44.1 embeds webpack 5.94.0 and emits its module runtime into dist/*.js; webpack is not installed, so its LICENSE is vendored from webpack v5.94.0. Re-check the version when ncc changes."
+    },
+    {
+      "name": "llhttp",
+      "version": "8.1.0",
+      "license": "MIT",
+      "url": "https://github.com/nodejs/llhttp",
+      "files": ["licenses/llhttp-LICENSE-MIT"],
+      "requires": "undici",
+      "reason": "undici embeds llhttp compiled to WebAssembly (lib/llhttp/llhttp-wasm.js, llhttp_simd-wasm.js) and ships no llhttp license; undici v6.28.0 builds it from deps/llhttp v8.1.0, so LICENSE-MIT is vendored from nodejs/llhttp v8.1.0. Re-check the version when undici changes."
+    }
+  ]
+}
