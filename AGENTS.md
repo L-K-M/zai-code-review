@@ -24,6 +24,20 @@ npm run lint             # Run ESLint
 npm run ci               # Run lint, tests, and build
 ```
 
+## Licensing
+
+- The action's own code is MIT (`LICENSE`). Keep the `license` in
+  `package.json` and `package-lock.json` and the README License section
+  consistent with it; CI checks the manifests.
+- Before adding a dependency or vendored file, confirm its license allows
+  redistribution in the committed `dist/` bundle.
+- `npm run build` writes `dist/licenses.txt` with
+  `scripts/third-party-notices.mjs` from ncc's module graph and fails on a
+  bundled component without license text. Record gaps as explicit overrides
+  with a reason in `third-party-notices.jsonc`. When `@vercel/ncc` or
+  `undici` changes, re-check the webpack and llhttp versions declared there.
+  Commit `dist/licenses.txt` with the bundle; CI checks it.
+
 ## Code Style Guidelines
 
 ### Language & Runtime
