@@ -43,3 +43,25 @@ jobs:
         run: |
           git diff --exit-code -- dist/
           test -z "$(git status --porcelain --untracked-files=all -- dist/)"
+
+      # dist/ ships third-party code, so its notices must ship with it: the
+      # generator's header, llhttp (WebAssembly inside undici) and the webpack
+      # runtime that ncc emits.
+      - name: Verify bundled notices
+        run: |
+          test -s dist/licenses.txt
+          grep -q '^Third-party notices for zai-code-review$' dist/licenses.txt
+          grep -q 'Copyright Fedor Indutny' dist/licenses.txt
+          grep -q 'Copyright JS Foundation and other contributors' dist/licenses.txt
+
+      # Manifests must state the root LICENSE (MIT); the action is not on npm.
+      - name: Check license metadata
+        run: |
+          node -e "
+            const pkg = require('./package.json');
+            const lock = require('./package-lock.json');
+            if (pkg.license !== 'MIT' || pkg.private !== true || lock.packages[''].license !== 'MIT') {
+              console.error('package.json and package-lock.json must state license MIT; package.json private');
+              process.exit(1);
+            }
+          "
