@@ -1,5 +1,17 @@
-@actions/core
-MIT
+Third-party notices for zai-code-review
+
+zai-code-review bundles the third-party components listed below. Each component
+keeps its own license; its license and notice texts follow verbatim.
+
+Components: 22
+
+========================================================================
+@actions/core 3.0.1
+License: MIT
+Source: https://github.com/actions/toolkit
+
+--- LICENSE.md ---
+
 The MIT License (MIT)
 
 Copyright 2019 GitHub
@@ -10,8 +22,13 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-@actions/exec
-MIT
+========================================================================
+@actions/exec 3.0.0
+License: MIT
+Source: https://github.com/actions/toolkit
+
+--- LICENSE.md ---
+
 The MIT License (MIT)
 
 Copyright 2019 GitHub
@@ -22,8 +39,13 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-@actions/github
-MIT
+========================================================================
+@actions/github 9.1.1
+License: MIT
+Source: https://github.com/actions/toolkit
+
+--- LICENSE.md ---
+
 The MIT License (MIT)
 
 Copyright 2019 GitHub
@@ -34,8 +56,13 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-@actions/http-client
-MIT
+========================================================================
+@actions/http-client 3.0.2
+License: MIT
+Source: https://github.com/actions/toolkit
+
+--- LICENSE ---
+
 Actions Http Client for Node.js
 
 Copyright (c) GitHub, Inc.
@@ -58,9 +85,42 @@ NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
 WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+========================================================================
+@actions/http-client 4.0.1
+License: MIT
+Source: https://github.com/actions/toolkit
 
-@actions/io
-MIT
+--- LICENSE ---
+
+Actions Http Client for Node.js
+
+Copyright (c) GitHub, Inc.
+
+All rights reserved.
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+========================================================================
+@actions/io 3.0.2
+License: MIT
+Source: https://github.com/actions/toolkit
+
+--- LICENSE.md ---
+
 The MIT License (MIT)
 
 Copyright 2019 GitHub
@@ -71,8 +131,13 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-@octokit/auth-token
-MIT
+========================================================================
+@octokit/auth-token 6.0.0
+License: MIT
+Source: https://github.com/octokit/auth-token.js
+
+--- LICENSE ---
+
 The MIT License
 
 Copyright (c) 2019 Octokit contributors
@@ -95,9 +160,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
+========================================================================
+@octokit/core 7.0.6
+License: MIT
+Source: https://github.com/octokit/core.js
 
-@octokit/core
-MIT
+--- LICENSE ---
+
 The MIT License
 
 Copyright (c) 2019 Octokit contributors
@@ -120,9 +189,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
+========================================================================
+@octokit/endpoint 11.0.3
+License: MIT
+Source: https://github.com/octokit/endpoint.js
 
-@octokit/endpoint
-MIT
+--- LICENSE ---
+
 The MIT License
 
 Copyright (c) 2018 Octokit contributors
@@ -145,9 +218,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
+========================================================================
+@octokit/graphql 9.0.3
+License: MIT
+Source: https://github.com/octokit/graphql.js
 
-@octokit/graphql
-MIT
+--- LICENSE ---
+
 The MIT License
 
 Copyright (c) 2018 Octokit contributors
@@ -170,9 +247,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
+========================================================================
+@octokit/plugin-paginate-rest 14.0.0
+License: MIT
+Source: https://github.com/octokit/plugin-paginate-rest.js
 
-@octokit/plugin-paginate-rest
-MIT
+--- LICENSE ---
+
 MIT License Copyright (c) 2019 Octokit contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
@@ -181,9 +262,13 @@ The above copyright notice and this permission notice (including the next paragr
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+========================================================================
+@octokit/plugin-rest-endpoint-methods 17.0.0
+License: MIT
+Source: https://github.com/octokit/plugin-rest-endpoint-methods.js
 
-@octokit/plugin-rest-endpoint-methods
-MIT
+--- LICENSE ---
+
 MIT License Copyright (c) 2019 Octokit contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
@@ -192,9 +277,13 @@ The above copyright notice and this permission notice (including the next paragr
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+========================================================================
+@octokit/request 10.0.11
+License: MIT
+Source: https://github.com/octokit/request.js
 
-@octokit/request
-MIT
+--- LICENSE ---
+
 The MIT License
 
 Copyright (c) 2018 Octokit contributors
@@ -217,9 +306,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
+========================================================================
+@octokit/request-error 7.1.0
+License: MIT
+Source: https://github.com/octokit/request-error.js
 
-@octokit/request-error
-MIT
+--- LICENSE ---
+
 The MIT License
 
 Copyright (c) 2019 Octokit contributors
@@ -242,9 +335,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
+========================================================================
+before-after-hook 4.0.0
+License: Apache-2.0
+Source: https://github.com/gr2m/before-after-hook
 
-before-after-hook
-Apache-2.0
+--- LICENSE ---
+
                                  Apache License
                            Version 2.0, January 2004
                         http://www.apache.org/licenses/
@@ -447,9 +544,13 @@ Apache-2.0
    See the License for the specific language governing permissions and
    limitations under the License.
 
+========================================================================
+content-type 2.0.0
+License: MIT
+Source: https://github.com/jshttp/content-type
 
-content-type
-MIT
+--- LICENSE ---
+
 (The MIT License)
 
 Copyright (c) 2015 Douglas Christopher Wilson
@@ -473,9 +574,13 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+========================================================================
+json-with-bigint 3.5.10
+License: MIT
+Source: https://github.com/Ivan-Korolenko/json-with-bigint
 
-json-with-bigint
-MIT
+--- LICENSE ---
+
 MIT License
 
 Copyright (c) 2023 Ivan Korolenko
@@ -498,9 +603,43 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+========================================================================
+llhttp 8.1.0
+License: MIT
+Source: https://github.com/nodejs/llhttp
 
-tunnel
-MIT
+--- llhttp-LICENSE-MIT ---
+
+This software is licensed under the MIT License.
+
+Copyright Fedor Indutny, 2018.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to permit
+persons to whom the Software is furnished to do so, subject to the
+following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+========================================================================
+tunnel 0.0.6
+License: MIT
+Source: https://github.com/koichik/node-tunnel
+
+--- LICENSE ---
+
 The MIT License (MIT)
 
 Copyright (c) 2012 Koichi Kobayashi
@@ -523,9 +662,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
+========================================================================
+undici 6.28.0
+License: MIT
+Source: https://github.com/nodejs/undici
 
-undici
-MIT
+--- LICENSE ---
+
 MIT License
 
 Copyright (c) Matteo Collina and Undici contributors
@@ -548,9 +691,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+========================================================================
+universal-user-agent 7.0.3
+License: ISC
+Source: https://github.com/gr2m/universal-user-agent
 
-universal-user-agent
-ISC
+--- LICENSE.md ---
+
 # [ISC License](https://spdx.org/licenses/ISC)
 
 Copyright (c) 2018-2021, Gregor Martynus (https://github.com/gr2m)
@@ -558,3 +705,31 @@ Copyright (c) 2018-2021, Gregor Martynus (https://github.com/gr2m)
 Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.
 
 THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+========================================================================
+webpack 5.94.0
+License: MIT
+Source: https://github.com/webpack/webpack
+
+--- webpack-LICENSE ---
+
+Copyright JS Foundation and other contributors
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+'Software'), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

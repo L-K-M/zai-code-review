@@ -9,7 +9,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "ncc build src/index.js -o dist --license licenses.txt",
+    "build": "ncc build src/index.js -o dist --stats-out node_modules/.ncc-stats.json && node scripts/third-party-notices.mjs --webpack-stats node_modules/.ncc-stats.json --config third-party-notices.jsonc --out dist/licenses.txt",
     "lint": "eslint src/",
     "test": "jest",
     "test:watch": "jest --watch",
