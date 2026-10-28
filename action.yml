@@ -28,6 +28,18 @@ inputs:
     description: "Fallback provider model (for example mimo-v2.6-pro)"
     required: false
     default: ""
+  FAST_API_KEY:
+    description: "Optional API key for an OpenAI-compatible provider that serves the fast tier on its own quota; empty keeps the fast tier on Z.ai"
+    required: false
+    default: ""
+  FAST_API_URL:
+    description: "https chat completions URL of the fast-tier provider (for example https://api.stepfun.ai/step_plan/v1/chat/completions)"
+    required: false
+    default: ""
+  FAST_MODEL:
+    description: "Fast-tier provider model (for example step-5-preview); replaces ZAI_MODEL_FAST when FAST_API_KEY is set"
+    required: false
+    default: ""
   ZAI_REASONING_EFFORT:
     description: "Reasoning effort for supported models: low, high, or max"
     required: false

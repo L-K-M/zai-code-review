@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.0.16] - 2026-10-28
+
+### Added
+- Optional dedicated provider for the fast tier (`FAST_API_KEY`,
+  `FAST_API_URL`, `FAST_MODEL`), such as StepFun: fast-routed chunks and the
+  rate-limit degrade target run on its own quota instead of the Z.ai plan,
+  with the Z.ai fast model as the same-tier backstop
+- `reasoning_effort` is also sent for Step `step-*` models, which advertise
+  support for it
 
 ### Fixed
 - `dist/licenses.txt` includes the notices for llhttp (WebAssembly inside

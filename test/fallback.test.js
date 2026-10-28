@@ -11,6 +11,7 @@ const {
   buildModelRoutingNotice,
   callZaiApi,
   parseFallbackProvider,
+  parseFastProvider,
   reviewChunkWithFallbacks,
 } = require('../src/index');
 
@@ -46,7 +47,13 @@ function primary(overrides = {}) {
     apiOptions: { maxOutputTokens: 98304 },
     model: 'glm-5.3',
     tier: 'deep',
-    degradeModel: 'glm-5.3-flash',
+    provider: 'zai',
+    degrade: {
+      model: 'glm-5.3-flash',
+      apiKey: 'zai-key',
+      apiOptions: { maxOutputTokens: 98304 },
+      provider: 'zai',
+    },
     ...overrides,
   };
 }
@@ -68,6 +75,50 @@ describe('parseFallbackProvider', () => {
     ['an invalid URL', { apiUrl: 'not a url', model: FALLBACK.model }],
   ])('is disabled by %s', (_name, input) => {
     expect(parseFallbackProvider({ apiKey: 'fallback-key', ...input })).toBeNull();
+  });
+});
+
+const STEPFUN = {
+  apiKey: 'stepfun-key',
+  apiUrl: 'https://api.stepfun.ai/step_plan/v1/chat/completions',
+  model: 'step-5-preview',
+};
+
+// A fast chunk served by the dedicated provider: its own key and endpoint,
+// with the Z.ai fast model chained as the same-tier backstop.
+function fastPrimary(overrides = {}) {
+  return {
+    apiKey: STEPFUN.apiKey,
+    apiOptions: { maxOutputTokens: 98304, endpoint: STEPFUN.apiUrl, errorPrefix: 'Fast API: ' },
+    model: 'step-5-preview',
+    tier: 'fast',
+    provider: 'fast',
+    secondary: {
+      model: 'glm-5.3-flash',
+      apiKey: 'zai-key',
+      apiOptions: { maxOutputTokens: 98304 },
+      provider: 'zai',
+    },
+    ...overrides,
+  };
+}
+
+describe('parseFastProvider', () => {
+  test('is disabled without a key', () => {
+    expect(parseFastProvider({ apiKey: '', apiUrl: STEPFUN.apiUrl, model: STEPFUN.model })).toBeNull();
+  });
+
+  test('accepts a complete https provider', () => {
+    expect(parseFastProvider({ apiKey: ' stepfun-key ', apiUrl: STEPFUN.apiUrl, model: ' step-5-preview ' }))
+      .toEqual(STEPFUN);
+  });
+
+  test.each([
+    ['a missing model', { apiUrl: STEPFUN.apiUrl, model: '' }],
+    ['a non-https URL', { apiUrl: 'http://api.stepfun.ai/step_plan/v1/chat/completions', model: STEPFUN.model }],
+    ['an invalid URL', { apiUrl: 'not a url', model: STEPFUN.model }],
+  ])('is disabled by %s', (_name, input) => {
+    expect(parseFastProvider({ apiKey: 'stepfun-key', ...input })).toBeNull();
   });
 });
 
@@ -149,10 +200,70 @@ describe('reviewChunkWithFallbacks', () => {
   test('keeps the previous behavior without a fallback', async () => {
     const { reviewChunk, calls } = fakeReviewer({ 'glm-5.3': httpError(500) });
     const outcome = await reviewChunkWithFallbacks({
-      chunk, primary: primary({ degradeModel: '' }), skipPrimary: true, label: 'Chunk 1/1', reviewChunk,
+      chunk, primary: primary({ degrade: null }), skipPrimary: true, label: 'Chunk 1/1', reviewChunk,
     });
     expect(outcome.error).toBe('glm-5.3: Z.ai API: HTTP 500.');
     expect(calls.map(call => call.model)).toEqual(['glm-5.3']);
+  });
+
+  test('serves a fast chunk from its dedicated provider', async () => {
+    const { reviewChunk, calls } = fakeReviewer({ 'step-5-preview': 'stepfun review' });
+    const outcome = await reviewChunkWithFallbacks({ chunk, primary: fastPrimary(), fallback: FALLBACK, label: 'Chunk 1/1', reviewChunk });
+    expect(outcome.result).toMatchObject({ rawReview: 'stepfun review', tier: 'fast', provider: 'fast' });
+    expect(outcome.primaryRateLimited).toBe(false);
+    expect(calls).toEqual([
+      { model: 'step-5-preview', apiKey: 'stepfun-key', endpoint: STEPFUN.apiUrl },
+    ]);
+  });
+
+  test('falls back to the Z.ai fast model when the fast provider fails', async () => {
+    const { reviewChunk, calls } = fakeReviewer({
+      'step-5-preview': httpError(503),
+      'glm-5.3-flash': 'zai fast review',
+    });
+    const outcome = await reviewChunkWithFallbacks({ chunk, primary: fastPrimary(), fallback: FALLBACK, label: 'Chunk 1/1', reviewChunk });
+    expect(outcome.result).toMatchObject({ rawReview: 'zai fast review', tier: 'fast', provider: 'zai' });
+    expect(calls).toEqual([
+      { model: 'step-5-preview', apiKey: 'stepfun-key', endpoint: STEPFUN.apiUrl },
+      { model: 'glm-5.3-flash', apiKey: 'zai-key', endpoint: undefined },
+    ]);
+  });
+
+  test('a rate-limited fast provider does not count as a Z.ai rate limit', async () => {
+    const { reviewChunk } = fakeReviewer({
+      'step-5-preview': httpError(429),
+      'glm-5.3-flash': 'zai fast review',
+    });
+    const outcome = await reviewChunkWithFallbacks({ chunk, primary: fastPrimary(), fallback: FALLBACK, label: 'Chunk 1/1', reviewChunk });
+    expect(outcome.result.provider).toBe('zai');
+    expect(outcome.primaryRateLimited).toBe(false);
+  });
+
+  test('degrades a rate-limited deep chunk to the fast provider before the fallback', async () => {
+    const { reviewChunk, calls } = fakeReviewer({
+      'glm-5.3': httpError(429),
+      'step-5-preview': 'stepfun review',
+    });
+    const outcome = await reviewChunkWithFallbacks({
+      chunk,
+      primary: primary({
+        degrade: {
+          model: 'step-5-preview',
+          apiKey: STEPFUN.apiKey,
+          apiOptions: { maxOutputTokens: 98304, endpoint: STEPFUN.apiUrl, errorPrefix: 'Fast API: ' },
+          provider: 'fast',
+        },
+      }),
+      fallback: FALLBACK,
+      label: 'Chunk 1/1',
+      reviewChunk,
+    });
+    expect(outcome.result).toMatchObject({ rawReview: 'stepfun review', tier: 'degraded', provider: 'fast' });
+    expect(outcome.primaryRateLimited).toBe(true);
+    expect(calls).toEqual([
+      { model: 'glm-5.3', apiKey: 'zai-key', endpoint: undefined },
+      { model: 'step-5-preview', apiKey: 'stepfun-key', endpoint: STEPFUN.apiUrl },
+    ]);
   });
 });
 
@@ -169,7 +280,7 @@ describe('buildModelRoutingNotice', () => {
       ],
     });
     expect(notice).toBe(
-      '> [!NOTE]\n> Model routing: 1 deep (glm-5.3), 2 reviewed by fallback mimo-v2.6-pro after Z.ai failed.'
+      '> [!NOTE]\n> Model routing: 1 deep (glm-5.3), 2 reviewed by fallback mimo-v2.6-pro after the primary providers failed.'
     );
   });
 });

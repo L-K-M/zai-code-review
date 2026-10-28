@@ -295,6 +295,26 @@ behaves as before; a key without an https URL or a model disables the fallback
 with a warning. The fallback provider receives the same diff and prompt as
 Z.ai, so enable it only where sending the code to that provider is acceptable.
 
+### Fast-tier provider
+
+Set `FAST_API_KEY`, `FAST_API_URL` and `FAST_MODEL` to give the fast tier its
+own OpenAI-compatible provider, such as StepFun:
+
+```yaml
+          FAST_API_KEY: ${{ secrets.STEPFUN_API_KEY }}
+          FAST_API_URL: https://api.stepfun.ai/step_plan/v1/chat/completions
+          FAST_MODEL: step-5-preview
+```
+
+With all three set, fast-routed chunks go to that provider and model instead of
+`ZAI_MODEL_FAST` on Z.ai, and a rate-limited deep chunk degrades to it rather
+than to a model on the rate-limited plan. The Z.ai fast model becomes the
+same-tier backstop before the outage fallback, so a fast-provider failure
+still produces a review. Without a key the action behaves exactly as before;
+a key without an https URL or a model disables the provider with a warning.
+The provider receives the same diff and prompt as Z.ai, so enable it only
+where sending the code to that provider is acceptable.
+
 Implementers can force a whole-PR tier with `zai-model:deep` or
 `zai-model:flash` labels; conflicting labels resolve to the deep tier. A
 `zai-model:flash` label skips the escalation pass, and a label-forced deep
@@ -338,6 +358,8 @@ For small PRs, all changes are sent in a single streaming API request. Larger PR
 | `ZAI_MODEL_ESCALATION` | `true` | Re-review fast-tier chunks with the deep model when they trip security signals |
 | `FALLBACK_API_URL` | `https://token-plan-sgp.xiaomimimo.com/v1/chat/completions` | OpenAI-compatible fallback provider for chunks Z.ai fails on; pass `FALLBACK_API_KEY` from a secret |
 | `FALLBACK_MODEL` | `mimo-v2.6-pro` | Fallback provider model |
+| `FAST_API_URL` | `https://api.stepfun.ai/step_plan/v1/chat/completions` | Optional OpenAI-compatible provider serving the fast tier on its own quota; pass `FAST_API_KEY` from a secret |
+| `FAST_MODEL` | `step-5-preview` | Fast-tier provider model; replaces `ZAI_MODEL_FAST` when `FAST_API_KEY` is set |
 | `ZAI_REASONING_EFFORT` | `high` | Reasoning effort for supported models: `low`, `high`, or `max` |
 | `ZAI_MAX_OUTPUT_TOKENS` | `32768` | Maximum output tokens per request |
 | `ZAI_REQUEST_TIMEOUT_SECONDS` | `900` | Inactivity timeout between response bytes; range 60–3600 seconds |

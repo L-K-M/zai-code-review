@@ -1,6 +1,6 @@
 {
   "name": "zai-code-review",
-  "version": "0.0.15",
+  "version": "0.0.16",
   "private": true,
   "description": "AI-powered code review GitHub Action using Z.ai",
   "license": "MIT",

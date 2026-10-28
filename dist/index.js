@@ -467,7 +467,7 @@ function buildModelRoutingNotice({ deepModel, fastModel, fallbackModel, reviews 
   if (counts.fast > 0) parts.push(`${counts.fast} fast (${fastModel})`);
   if (counts.escalated > 0) parts.push(`${counts.escalated} escalated to ${deepModel} after security signals`);
   if (counts.degraded > 0) parts.push(`${counts.degraded} fell back to ${fastModel} after rate limiting`);
-  if (counts.fallback > 0) parts.push(`${counts.fallback} reviewed by fallback ${fallbackModel} after Z.ai failed`);
+  if (counts.fallback > 0) parts.push(`${counts.fallback} reviewed by fallback ${fallbackModel} after the primary providers failed`);
   if (counts.failed > 0) parts.push(`${counts.failed} failed`);
   if (parts.length === 0) return '';
   return `> [!NOTE]\n> Model routing: ${parts.join(', ')}.`;
@@ -548,7 +548,7 @@ function mapSecuritySeverityToReviewSeverity(severity) {
 }
 
 function supportsReasoningEffort(model) {
-  return /^glm-5\.(?:2|3)(?:$|-)/i.test(model || '');
+  return /^(?:glm-5\.(?:2|3)(?:$|-)|step-)/i.test(model || '');
 }
 
 function buildZaiRequestBody(model, systemPrompt, prompt, apiOptions = {}) {
@@ -979,17 +979,19 @@ async function reviewChunkWithAdaptiveSplit({
 
 const FALLBACK_TIER = 'fallback';
 const FALLBACK_ERR_PREFIX = 'Fallback API: ';
+const FAST_ERR_PREFIX = 'Fast API: ';
 
-// An optional OpenAI-compatible provider for chunks Z.ai cannot review. All
-// three inputs are required; a missing key disables it silently, anything
-// else incomplete disables it with a warning rather than failing the review.
-function parseFallbackProvider({ apiKey, apiUrl, model }) {
+// Optional OpenAI-compatible providers validate identically: a key, an https
+// chat completions URL, and a model. A missing key disables silently (the
+// provider is opt-in per repository), anything else incomplete disables with
+// a warning rather than failing the review.
+function parseOpenAiProvider({ apiKey, apiUrl, model, inputNames }) {
   const key = (apiKey || '').trim();
   if (!key) {
     return null;
   }
 
-  const fallbackModel = (model || '').trim();
+  const providerModel = (model || '').trim();
   let url;
   try {
     url = new URL((apiUrl || '').trim());
@@ -997,19 +999,53 @@ function parseFallbackProvider({ apiKey, apiUrl, model }) {
     url = null;
   }
   const problems = [];
-  if (url?.protocol !== 'https:') problems.push('FALLBACK_API_URL must be an https URL');
-  if (!fallbackModel) problems.push('FALLBACK_MODEL is empty');
+  if (url?.protocol !== 'https:') problems.push(`${inputNames.url} must be an https URL`);
+  if (!providerModel) problems.push(`${inputNames.model} is empty`);
   if (problems.length > 0) {
-    core?.warning(`FALLBACK_API_KEY is set, but ${problems.join(' and ')}; the fallback is disabled.`);
+    core?.warning(`${inputNames.key} is set, but ${problems.join(' and ')}; the ${inputNames.label} is disabled.`);
     return null;
   }
-  return { apiKey: key, apiUrl: url.toString(), model: fallbackModel };
+  return { apiKey: key, apiUrl: url.toString(), model: providerModel };
 }
 
-// Reviews one chunk, trying in order: its routed Z.ai model; the fast model
-// when a classifier-routed deep request is rate-limited; then the fallback
-// provider. With skipPrimary (Z.ai was rate-limited earlier in this run and
-// the fallback answered) the fallback goes first and Z.ai is the backstop.
+// Reviews the chunks Z.ai cannot.
+function parseFallbackProvider({ apiKey, apiUrl, model }) {
+  return parseOpenAiProvider({
+    apiKey,
+    apiUrl,
+    model,
+    inputNames: {
+      key: 'FALLBACK_API_KEY',
+      url: 'FALLBACK_API_URL',
+      model: 'FALLBACK_MODEL',
+      label: 'fallback',
+    },
+  });
+}
+
+// A dedicated provider for the fast tier: first-pass reviews then happen on
+// its own quota instead of the Z.ai plan, and the rate-limit degrade target
+// moves to a provider a Z.ai 429 does not reach.
+function parseFastProvider({ apiKey, apiUrl, model }) {
+  return parseOpenAiProvider({
+    apiKey,
+    apiUrl,
+    model,
+    inputNames: {
+      key: 'FAST_API_KEY',
+      url: 'FAST_API_URL',
+      model: 'FAST_MODEL',
+      label: 'fast provider',
+    },
+  });
+}
+
+// Reviews one chunk, trying its routed model first, then the attempts the
+// caller chained onto primary: degrade (a rate-limited deep chunk's fast-tier
+// deputy), secondary (the same-tier backstop on the other provider when the
+// fast tier has its own), then the fallback provider. With skipPrimary (Z.ai
+// was rate-limited earlier in this run and the fallback answered) the
+// fallback goes first and the primary attempts are the backstop.
 // Returns { result } or { error }, plus whether Z.ai answered 429.
 async function reviewChunkWithFallbacks({
   chunk,
@@ -1020,21 +1056,25 @@ async function reviewChunkWithFallbacks({
   reviewChunk = reviewOneChunk,
 }) {
   const primaryAttempts = [
-    { model: primary.model, tier: primary.tier, apiKey: primary.apiKey, apiOptions: primary.apiOptions },
-  ];
-  if (primary.degradeModel) {
-    primaryAttempts.push({
-      model: primary.degradeModel,
-      tier: 'degraded',
+    {
+      model: primary.model,
+      tier: primary.tier,
+      provider: primary.provider || 'zai',
       apiKey: primary.apiKey,
       apiOptions: primary.apiOptions,
-      afterRateLimitOnly: true,
-    });
+    },
+  ];
+  if (primary.degrade) {
+    primaryAttempts.push({ ...primary.degrade, tier: 'degraded', afterRateLimitOnly: true });
+  }
+  if (primary.secondary) {
+    primaryAttempts.push({ ...primary.secondary, tier: primary.tier });
   }
   const fallbackAttempts = fallback
     ? [{
       model: fallback.model,
       tier: FALLBACK_TIER,
+      provider: FALLBACK_TIER,
       apiKey: fallback.apiKey,
       apiOptions: { ...primary.apiOptions, endpoint: fallback.apiUrl, errorPrefix: FALLBACK_ERR_PREFIX },
     }]
@@ -1062,11 +1102,12 @@ async function reviewChunkWithFallbacks({
         apiOptions: attempt.apiOptions,
       });
       result.tier = attempt.tier;
+      result.provider = attempt.provider;
       return { result, primaryRateLimited };
     } catch (err) {
       lastError = err;
       errors.push(`${attempt.model}: ${err.message}`);
-      if (attempt.tier !== FALLBACK_TIER && err?.statusCode === 429) {
+      if (attempt.provider === 'zai' && err?.statusCode === 429) {
         primaryRateLimited = true;
       }
     }
@@ -1434,6 +1475,22 @@ async function run() {
     apiUrl: core.getInput('FALLBACK_API_URL'),
     model: core.getInput('FALLBACK_MODEL'),
   });
+  const fastApiKey = core.getInput('FAST_API_KEY');
+  if (fastApiKey.trim()) {
+    core.setSecret(fastApiKey.trim());
+  }
+  // The dedicated fast provider only matters with two-tier routing; without a
+  // distinct fast model there is no fast tier to serve.
+  const fastProvider = twoTierRouting
+    ? parseFastProvider({
+      apiKey: fastApiKey,
+      apiUrl: core.getInput('FAST_API_URL'),
+      model: core.getInput('FAST_MODEL'),
+    })
+    : null;
+  const fastApiOptions = fastProvider
+    ? { ...apiOptions, endpoint: fastProvider.apiUrl, errorPrefix: FAST_ERR_PREFIX }
+    : null;
   const token = core.getInput('GITHUB_TOKEN');
   core.setSecret(token);
   let threadSimilarityThreshold = parseFloat(core.getInput('ZAI_THREAD_SIMILARITY_THRESHOLD'));
@@ -1468,7 +1525,8 @@ async function run() {
   const routeResolution = ModelRouter.resolveModelRoute(labels);
   if (twoTierRouting) {
     core.info(
-      `Two-tier model routing enabled: deep=${deepModel}, fast=${fastModel}, `
+      `Two-tier model routing enabled: deep=${deepModel}, fast=${fastProvider ? fastProvider.model : fastModel}`
+        + `${fastProvider ? ` via ${new URL(fastProvider.apiUrl).host}` : ''}, `
         + `escalation=${modelEscalation ? 'on' : 'off'}.`
     );
     if (routeResolution.labelTiers.length > 1) {
@@ -1601,9 +1659,18 @@ async function run() {
         }
       }
     }
-    const chunkModel = tier === 'deep' ? deepModel : fastModel;
+    // A dedicated fast provider serves the fast tier on its own quota; the
+    // Z.ai fast model stays configured as its same-tier backstop and as the
+    // fast tier for repositories without the extra inputs.
+    const fastAttempt = fastProvider
+      ? { model: fastProvider.model, apiKey: fastProvider.apiKey, apiOptions: fastApiOptions, provider: 'fast' }
+      : { model: fastModel, apiKey, apiOptions, provider: 'zai' };
+    const onZai = !(tier === 'fast' && fastProvider);
+    const primary = onZai
+      ? { model: tier === 'deep' ? deepModel : fastModel, apiKey, apiOptions, provider: 'zai', tier }
+      : { ...fastAttempt, tier };
 
-    core.info(`Processing chunk ${i + 1}/${chunks.length} (${chunks[i].length} file section(s)) with ${chunkModel}...`);
+    core.info(`Processing chunk ${i + 1}/${chunks.length} (${chunks[i].length} file section(s)) with ${primary.model}...`);
     // A classifier-routed deep chunk that hits the API rate limit degrades to
     // the fast tier. Label-forced deep chunks keep their explicit routing.
     const outcome = await reviewChunkWithFallbacks({
@@ -1617,20 +1684,21 @@ async function run() {
         customPatterns,
       },
       primary: {
-        apiKey,
-        apiOptions,
-        model: chunkModel,
-        tier,
-        degradeModel: twoTierRouting && tier === 'deep' && routeSource === 'classifier' ? fastModel : '',
+        ...primary,
+        degrade: twoTierRouting && tier === 'deep' && routeSource === 'classifier' ? fastAttempt : null,
+        // A fast chunk on the dedicated provider still has the Z.ai fast
+        // model as a same-tier backstop before the outage fallback.
+        secondary: !onZai ? { model: fastModel, apiKey, apiOptions, provider: 'zai' } : null,
       },
       fallback,
-      // A label pins the Z.ai tier, so those chunks keep Z.ai first.
-      skipPrimary: primaryUnavailable && routeSource !== 'label',
+      // A label pins the Z.ai tier, so those chunks keep Z.ai first. A fast
+      // chunk served by its own provider is unaffected by Z.ai rate limits.
+      skipPrimary: primaryUnavailable && routeSource !== 'label' && onZai,
       label: `Chunk ${i + 1}/${chunks.length}`,
     });
     // A Z.ai rate limit usually lasts the plan window, so later chunks try the
     // fallback first; any Z.ai answer, including as a backstop, ends that.
-    const zaiAnswered = !!outcome.result && outcome.result.tier !== FALLBACK_TIER;
+    const zaiAnswered = outcome.result?.provider === 'zai';
     primaryUnavailable = !!fallback && !zaiAnswered && (primaryUnavailable || outcome.primaryRateLimited);
     if (outcome.result) {
       outcome.result.labelForced = routeSource === 'label';
@@ -1707,7 +1775,12 @@ async function run() {
   }
 
   const routingNotice = twoTierRouting || reviews.some(review => review.tier === FALLBACK_TIER)
-    ? buildModelRoutingNotice({ deepModel, fastModel, fallbackModel: fallback?.model, reviews })
+    ? buildModelRoutingNotice({
+      deepModel,
+      fastModel: fastProvider ? fastProvider.model : fastModel,
+      fallbackModel: fallback?.model,
+      reviews,
+    })
     : '';
   const combinedReview = buildCombinedReview(
     reviews,
@@ -1779,6 +1852,7 @@ module.exports = {
   decorateChunkReview,
   reviewOneChunk,
   parseFallbackProvider,
+  parseFastProvider,
   reviewChunkWithFallbacks,
   extractActionableSuggestions,
   formatApiRequestLabel,
