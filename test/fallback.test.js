@@ -265,13 +265,44 @@ describe('reviewChunkWithFallbacks', () => {
       { model: 'step-5-preview', apiKey: 'stepfun-key', endpoint: STEPFUN.apiUrl },
     ]);
   });
+
+  test('promotes a cross-provider degrade ahead of the fallback while Z.ai is rate-limited', async () => {
+    const { reviewChunk, calls } = fakeReviewer({ 'step-5-preview': 'stepfun review' });
+    const outcome = await reviewChunkWithFallbacks({
+      chunk,
+      primary: primary({
+        degrade: {
+          model: 'step-5-preview',
+          apiKey: STEPFUN.apiKey,
+          apiOptions: { maxOutputTokens: 98304, endpoint: STEPFUN.apiUrl, errorPrefix: 'Fast API: ' },
+          provider: 'fast',
+        },
+      }),
+      fallback: FALLBACK,
+      skipPrimary: true,
+      label: 'Chunk 2/2',
+      reviewChunk,
+    });
+    expect(outcome.result).toMatchObject({ rawReview: 'stepfun review', tier: 'degraded', provider: 'fast' });
+    expect(calls).toEqual([
+      { model: 'step-5-preview', apiKey: 'stepfun-key', endpoint: STEPFUN.apiUrl },
+    ]);
+  });
+
+  test('keeps the outage fallback first when the degrade is on the rate-limited plan', async () => {
+    const { reviewChunk, calls } = fakeReviewer({ 'mimo-v2.6-pro': 'mimo review' });
+    const outcome = await reviewChunkWithFallbacks({
+      chunk, primary: primary(), fallback: FALLBACK, skipPrimary: true, label: 'Chunk 2/2', reviewChunk,
+    });
+    expect(outcome.result.tier).toBe('fallback');
+    expect(calls.map(call => call.model)).toEqual(['mimo-v2.6-pro']);
+  });
 });
 
 describe('buildModelRoutingNotice', () => {
   test('counts chunks the fallback reviewed', () => {
     const notice = buildModelRoutingNotice({
       deepModel: 'glm-5.3',
-      fastModel: 'glm-5.3-flash',
       fallbackModel: 'mimo-v2.6-pro',
       reviews: [
         { success: true, tier: 'deep' },
@@ -281,6 +312,23 @@ describe('buildModelRoutingNotice', () => {
     });
     expect(notice).toBe(
       '> [!NOTE]\n> Model routing: 1 deep (glm-5.3), 2 reviewed by fallback mimo-v2.6-pro after the primary providers failed.'
+    );
+  });
+
+  test('credits fast and degraded chunks to the model that answered', () => {
+    const notice = buildModelRoutingNotice({
+      deepModel: 'glm-5.3',
+      fallbackModel: 'mimo-v2.6-pro',
+      reviews: [
+        { success: true, tier: 'deep', model: 'glm-5.3' },
+        { success: true, tier: 'fast', model: 'step-5-preview' },
+        { success: true, tier: 'fast', model: 'glm-5.3-flash' },
+        { success: true, tier: 'degraded', model: 'step-5-preview' },
+      ],
+    });
+    expect(notice).toBe(
+      '> [!NOTE]\n> Model routing: 1 deep (glm-5.3), 1 fast (step-5-preview), '
+        + '1 fast (glm-5.3-flash), 1 fell back to step-5-preview after rate limiting.'
     );
   });
 });

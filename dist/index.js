@@ -452,11 +452,18 @@ function decorateChunkReview(rawReview, chunkFiles, scopeMode, customPatterns) {
   return { summaryReview, review: decoratedReview, findings: chunkFindings };
 }
 
-function buildModelRoutingNotice({ deepModel, fastModel, fallbackModel, reviews }) {
-  const counts = { deep: 0, fast: 0, escalated: 0, degraded: 0, fallback: 0, failed: 0 };
+function buildModelRoutingNotice({ deepModel, fallbackModel, reviews }) {
+  const counts = { deep: 0, escalated: 0, fallback: 0, failed: 0 };
+  // Fast and degraded chunks can be served by more than one provider, so
+  // they are credited to the model that actually answered.
+  const servedModels = { fast: new Map(), degraded: new Map() };
   for (const review of reviews) {
     if (!review.success) {
       counts.failed++;
+    } else if (review.tier === 'fast' || review.tier === 'degraded') {
+      const tierCounts = servedModels[review.tier];
+      const model = review.model || 'unknown model';
+      tierCounts.set(model, (tierCounts.get(model) || 0) + 1);
     } else if (Object.hasOwn(counts, review.tier)) {
       counts[review.tier]++;
     }
@@ -464,9 +471,13 @@ function buildModelRoutingNotice({ deepModel, fastModel, fallbackModel, reviews 
 
   const parts = [];
   if (counts.deep > 0) parts.push(`${counts.deep} deep (${deepModel})`);
-  if (counts.fast > 0) parts.push(`${counts.fast} fast (${fastModel})`);
+  for (const [model, count] of servedModels.fast) {
+    parts.push(`${count} fast (${model})`);
+  }
   if (counts.escalated > 0) parts.push(`${counts.escalated} escalated to ${deepModel} after security signals`);
-  if (counts.degraded > 0) parts.push(`${counts.degraded} fell back to ${fastModel} after rate limiting`);
+  for (const [model, count] of servedModels.degraded) {
+    parts.push(`${count} fell back to ${model} after rate limiting`);
+  }
   if (counts.fallback > 0) parts.push(`${counts.fallback} reviewed by fallback ${fallbackModel} after the primary providers failed`);
   if (counts.failed > 0) parts.push(`${counts.failed} failed`);
   if (parts.length === 0) return '';
@@ -1079,8 +1090,21 @@ async function reviewChunkWithFallbacks({
       apiOptions: { ...primary.apiOptions, endpoint: fallback.apiUrl, errorPrefix: FALLBACK_ERR_PREFIX },
     }]
     : [];
+  // While Z.ai is rate-limited, a deputy on another provider is promoted
+  // ahead of the outage fallback instead of staying behind its 429 gate —
+  // otherwise the fallback preempts it for the rest of the run. A deputy on
+  // Z.ai itself keeps the old order: it shares the rate-limited plan, so the
+  // fallback is still the likelier answer.
+  const degradeAttempt = primaryAttempts.find(attempt => attempt.afterRateLimitOnly);
+  const promotableDegrade = degradeAttempt && degradeAttempt.provider !== 'zai';
   const attempts = skipPrimary && fallback
-    ? [...fallbackAttempts, ...primaryAttempts]
+    ? promotableDegrade
+      ? [
+        { ...degradeAttempt, afterRateLimitOnly: false },
+        ...fallbackAttempts,
+        ...primaryAttempts.filter(attempt => !attempt.afterRateLimitOnly),
+      ]
+      : [...fallbackAttempts, ...primaryAttempts]
     : [...primaryAttempts, ...fallbackAttempts];
 
   const errors = [];
@@ -1481,13 +1505,16 @@ async function run() {
   }
   // The dedicated fast provider only matters with two-tier routing; without a
   // distinct fast model there is no fast tier to serve.
-  const fastProvider = twoTierRouting
-    ? parseFastProvider({
+  let fastProvider = null;
+  if (twoTierRouting) {
+    fastProvider = parseFastProvider({
       apiKey: fastApiKey,
       apiUrl: core.getInput('FAST_API_URL'),
       model: core.getInput('FAST_MODEL'),
-    })
-    : null;
+    });
+  } else if (fastApiKey.trim()) {
+    core.warning('FAST_API_KEY is set, but two-tier model routing is not enabled; the fast provider is ignored.');
+  }
   const fastApiOptions = fastProvider
     ? { ...apiOptions, endpoint: fastProvider.apiUrl, errorPrefix: FAST_ERR_PREFIX }
     : null;
@@ -1691,8 +1718,9 @@ async function run() {
         secondary: !onZai ? { model: fastModel, apiKey, apiOptions, provider: 'zai' } : null,
       },
       fallback,
-      // A label pins the Z.ai tier, so those chunks keep Z.ai first. A fast
-      // chunk served by its own provider is unaffected by Z.ai rate limits.
+      // A label pins the chunk's tier, so label-forced chunks are not
+      // reordered fallback-first while Z.ai is rate-limited. A fast chunk
+      // served by its own provider is unaffected by Z.ai rate limits.
       skipPrimary: primaryUnavailable && routeSource !== 'label' && onZai,
       label: `Chunk ${i + 1}/${chunks.length}`,
     });
@@ -1775,12 +1803,7 @@ async function run() {
   }
 
   const routingNotice = twoTierRouting || reviews.some(review => review.tier === FALLBACK_TIER)
-    ? buildModelRoutingNotice({
-      deepModel,
-      fastModel: fastProvider ? fastProvider.model : fastModel,
-      fallbackModel: fallback?.model,
-      reviews,
-    })
+    ? buildModelRoutingNotice({ deepModel, fallbackModel: fallback?.model, reviews })
     : '';
   const combinedReview = buildCombinedReview(
     reviews,
