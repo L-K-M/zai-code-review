@@ -27,7 +27,8 @@ function httpError(statusCode) {
   return error;
 }
 
-// Fake reviewOneChunk: each model answers with the queued outcome.
+// Fake reviewOneChunk: each model answers with the queued outcome. Results
+// deliberately omit `model` — reviewChunkWithFallbacks must stamp it.
 function fakeReviewer(outcomes) {
   const calls = [];
   const reviewChunk = jest.fn(async args => {
@@ -36,7 +37,7 @@ function fakeReviewer(outcomes) {
     if (outcome instanceof Error) {
       throw outcome;
     }
-    return { index: args.chunkIndex, rawReview: outcome, success: true, model: args.model };
+    return { index: args.chunkIndex, rawReview: outcome, success: true };
   });
   return { reviewChunk, calls };
 }
@@ -209,7 +210,9 @@ describe('reviewChunkWithFallbacks', () => {
   test('serves a fast chunk from its dedicated provider', async () => {
     const { reviewChunk, calls } = fakeReviewer({ 'step-5-preview': 'stepfun review' });
     const outcome = await reviewChunkWithFallbacks({ chunk, primary: fastPrimary(), fallback: FALLBACK, label: 'Chunk 1/1', reviewChunk });
-    expect(outcome.result).toMatchObject({ rawReview: 'stepfun review', tier: 'fast', provider: 'fast' });
+    expect(outcome.result).toMatchObject({
+      rawReview: 'stepfun review', tier: 'fast', provider: 'fast', model: 'step-5-preview',
+    });
     expect(outcome.primaryRateLimited).toBe(false);
     expect(calls).toEqual([
       { model: 'step-5-preview', apiKey: 'stepfun-key', endpoint: STEPFUN.apiUrl },

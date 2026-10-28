@@ -559,7 +559,9 @@ function mapSecuritySeverityToReviewSeverity(severity) {
 }
 
 function supportsReasoningEffort(model) {
-  return /^(?:glm-5\.(?:2|3)(?:$|-)|step-)/i.test(model || '');
+  // StepFun's numbered chat models advertise reasoning_effort support;
+  // stepaudio-* and other step-* families may not, so they stay excluded.
+  return /^(?:glm-5\.(?:2|3)(?:$|-)|step-\d)/i.test(model || '');
 }
 
 function buildZaiRequestBody(model, systemPrompt, prompt, apiOptions = {}) {
@@ -1127,6 +1129,7 @@ async function reviewChunkWithFallbacks({
       });
       result.tier = attempt.tier;
       result.provider = attempt.provider;
+      result.model = attempt.model;
       return { result, primaryRateLimited };
     } catch (err) {
       lastError = err;

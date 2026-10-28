@@ -12,8 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FAST_API_URL`, `FAST_MODEL`), such as StepFun: fast-routed chunks and the
   rate-limit degrade target run on its own quota instead of the Z.ai plan,
   with the Z.ai fast model as the same-tier backstop
-- `reasoning_effort` is also sent for Step `step-*` models, which advertise
-  support for it
+- `reasoning_effort` is also sent for StepFun's numbered `step-*` models,
+  which advertise support for it
+- While Z.ai is rate-limited, a rate-limit degrade target on another provider
+  leads the attempt order for later deep chunks instead of the outage
+  fallback; a deputy on Z.ai itself keeps fallback-first order
 
 ### Fixed
 - `dist/licenses.txt` includes the notices for llhttp (WebAssembly inside
