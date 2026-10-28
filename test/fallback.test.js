@@ -14,6 +14,7 @@ const {
   parseFastProvider,
   reviewChunkWithFallbacks,
   nextPrimaryUnavailable,
+  nextFastUnavailable,
 } = require('../src/index');
 
 const FALLBACK = {
@@ -108,6 +109,7 @@ function fastPrimary(overrides = {}) {
 describe('parseFastProvider', () => {
   test('is disabled without a key', () => {
     expect(parseFastProvider({ apiKey: '', apiUrl: STEPFUN.apiUrl, model: STEPFUN.model })).toBeNull();
+    expect(parseFastProvider({ apiKey: '   ', apiUrl: STEPFUN.apiUrl, model: STEPFUN.model })).toBeNull();
   });
 
   test('accepts a complete https provider', () => {
@@ -238,6 +240,18 @@ describe('reviewChunkWithFallbacks', () => {
     expect(outcome.primaryRateLimited).toBe(true);
   });
 
+  test('reports fastRateLimited when the fast provider 429s but a backstop answers', async () => {
+    const { reviewChunk, calls } = fakeReviewer({
+      'step-5-preview': httpError(429),
+      'glm-5.3-flash': 'zai fast review',
+    });
+    const outcome = await reviewChunkWithFallbacks({ chunk, primary: fastPrimary(), fallback: FALLBACK, label: 'Chunk 1/1', reviewChunk });
+    expect(outcome.result).toMatchObject({ rawReview: 'zai fast review', provider: 'zai' });
+    expect(outcome.fastRateLimited).toBe(true);
+    expect(outcome.primaryRateLimited).toBe(false);
+    expect(calls.map(call => call.model)).toEqual(['step-5-preview', 'glm-5.3-flash']);
+  });
+
   test('falls back to the Z.ai fast model when the fast provider fails', async () => {
     const { reviewChunk, calls } = fakeReviewer({
       'step-5-preview': httpError(503),
@@ -349,6 +363,18 @@ describe('nextPrimaryUnavailable', () => {
     })).toBe(false);
   });
 
+  test('clears when the deep model answers again', () => {
+    expect(nextPrimaryUnavailable({
+      outcome: served('deep', 'zai'), fallback: FALLBACK, wasUnavailable: true,
+    })).toBe(false);
+  });
+
+  test('a fallback serve without a Z.ai 429 does not latch from cold', () => {
+    expect(nextPrimaryUnavailable({
+      outcome: served('fallback', 'fallback'), fallback: FALLBACK, wasUnavailable: false,
+    })).toBe(false);
+  });
+
   test('clears after a deputy-served degrade so Z.ai is re-probed next', () => {
     // A StepFun answer says nothing about Z.ai's health, but keeping the
     // latch would pin every later deep chunk on the deputy for the run.
@@ -363,6 +389,37 @@ describe('nextPrimaryUnavailable', () => {
   test('latches when every attempt fails and Z.ai rate-limited', () => {
     expect(nextPrimaryUnavailable({
       outcome: limited({ error: 'all failed' }), fallback: FALLBACK, wasUnavailable: false,
+    })).toBe(true);
+  });
+});
+
+describe('nextFastUnavailable', () => {
+  const served = (tier, provider) => ({ result: { tier, provider }, primaryRateLimited: false, fastRateLimited: false });
+  const limited = outcome => ({ ...outcome, fastRateLimited: true });
+
+  test('latches when a backstop serves after the fast provider 429s', () => {
+    expect(nextFastUnavailable({
+      outcome: limited(served('fast', 'zai')), wasUnavailable: false,
+    })).toBe(true);
+  });
+
+  test('clears when the fast provider answers again', () => {
+    expect(nextFastUnavailable({
+      outcome: served('fast', 'fast'), wasUnavailable: true,
+    })).toBe(false);
+  });
+
+  test('keeps the latch while Z.ai or the fallback keep serving', () => {
+    for (const provider of ['zai', 'fallback']) {
+      expect(nextFastUnavailable({
+        outcome: served('fast', provider), wasUnavailable: true,
+      })).toBe(true);
+    }
+  });
+
+  test('latches even when every attempt fails after the provider 429s', () => {
+    expect(nextFastUnavailable({
+      outcome: limited({ error: 'all failed' }), wasUnavailable: false,
     })).toBe(true);
   });
 });

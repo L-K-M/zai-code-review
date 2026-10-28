@@ -638,15 +638,20 @@ describe('Z.ai request configuration', () => {
 
   test.each([
     ['step-5-preview', true],
-    ['step-2', true],
     ['step-3-flash', true],
+    ['step-1', false],
+    ['step-2', false],
     ['step-1v-8k', false],
     ['step-1o-turbo-v2', false],
     ['stepaudio-chat', false],
   ])('sends reasoning effort to %s: %s', (model, supported) => {
     const body = buildZaiRequestBody(model, 'system', 'prompt');
 
-    expect(body.reasoning_effort === undefined).toBe(!supported);
+    if (supported) {
+      expect(body.reasoning_effort).toBe('high');
+    } else {
+      expect(body.reasoning_effort).toBeUndefined();
+    }
   });
 
   test('parses streamed content and completion markers', () => {
