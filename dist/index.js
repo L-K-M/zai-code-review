@@ -559,9 +559,10 @@ function mapSecuritySeverityToReviewSeverity(severity) {
 }
 
 function supportsReasoningEffort(model) {
-  // StepFun's numbered chat models advertise reasoning_effort support;
-  // stepaudio-* and other step-* families may not, so they stay excluded.
-  return /^(?:glm-5\.(?:2|3)(?:$|-)|step-\d)/i.test(model || '');
+  // StepFun's numbered chat models advertise reasoning_effort support; the
+  // digit run must end at the name's end or a dash so vision/omni families
+  // like step-1v-* and step-1o-* stay excluded alongside stepaudio-*.
+  return /^(?:glm-5\.(?:2|3)(?:$|-)|step-\d+(?:$|-))/i.test(model || '');
 }
 
 function buildZaiRequestBody(model, systemPrompt, prompt, apiOptions = {}) {
@@ -1134,7 +1135,7 @@ async function reviewChunkWithFallbacks({
     } catch (err) {
       lastError = err;
       errors.push(`${attempt.model}: ${err.message}`);
-      if (attempt.provider === 'zai' && err?.statusCode === 429) {
+      if ((attempt.provider ?? 'zai') === 'zai' && err?.statusCode === 429) {
         primaryRateLimited = true;
       }
     }
@@ -1717,8 +1718,12 @@ async function run() {
         ...primary,
         degrade: twoTierRouting && tier === 'deep' && routeSource === 'classifier' ? fastAttempt : null,
         // A fast chunk on the dedicated provider still has the Z.ai fast
-        // model as a same-tier backstop before the outage fallback.
-        secondary: !onZai ? { model: fastModel, apiKey, apiOptions, provider: 'zai' } : null,
+        // model as a same-tier backstop before the outage fallback — but not
+        // while Z.ai is rate-limited, when the request would 429 anyway.
+        // Deep chunks keep probing Z.ai and clear the flag on recovery.
+        secondary: !onZai && !primaryUnavailable
+          ? { model: fastModel, apiKey, apiOptions, provider: 'zai' }
+          : null,
       },
       fallback,
       // A label pins the chunk's tier, so label-forced chunks are not

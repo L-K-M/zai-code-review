@@ -219,6 +219,24 @@ describe('reviewChunkWithFallbacks', () => {
     ]);
   });
 
+  test('treats attempts without provider as Z.ai for rate-limit detection', async () => {
+    // Callers using the pre-provider object shape keep the old semantics:
+    // an unlabeled degrade attempt belongs to the Z.ai plan, so its 429 counts.
+    const { reviewChunk } = fakeReviewer({
+      'glm-5.3': httpError(429),
+      'glm-5.3-flash': httpError(429),
+    });
+    const legacyPrimary = {
+      model: 'glm-5.3',
+      tier: 'deep',
+      apiKey: 'zai-key',
+      apiOptions: {},
+      degrade: { model: 'glm-5.3-flash', apiKey: 'zai-key', apiOptions: {} },
+    };
+    const outcome = await reviewChunkWithFallbacks({ chunk, primary: legacyPrimary, fallback: null, label: 'Chunk 1/1', reviewChunk });
+    expect(outcome.primaryRateLimited).toBe(true);
+  });
+
   test('falls back to the Z.ai fast model when the fast provider fails', async () => {
     const { reviewChunk, calls } = fakeReviewer({
       'step-5-preview': httpError(503),
