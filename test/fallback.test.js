@@ -325,6 +325,21 @@ describe('reviewChunkWithFallbacks', () => {
     ]);
   });
 
+  test('does not promote a degrade that omits the provider field', async () => {
+    // Legacy callers may build the degrade object without provider; it must
+    // default to Z.ai and keep fallback-first order, never be promoted.
+    const { reviewChunk, calls } = fakeReviewer({ 'mimo-v2.6-pro': 'mimo review' });
+    const outcome = await reviewChunkWithFallbacks({
+      chunk,
+      primary: primary({
+        degrade: { model: 'glm-5.3-flash', apiKey: 'zai-key', apiOptions: {} },
+      }),
+      fallback: FALLBACK, skipPrimary: true, label: 'Chunk 2/2', reviewChunk,
+    });
+    expect(outcome.result.tier).toBe('fallback');
+    expect(calls.map(call => call.model)).toEqual(['mimo-v2.6-pro']);
+  });
+
   test('keeps the outage fallback first when the degrade is on the rate-limited plan', async () => {
     const { reviewChunk, calls } = fakeReviewer({ 'mimo-v2.6-pro': 'mimo review' });
     const outcome = await reviewChunkWithFallbacks({
@@ -366,6 +381,24 @@ describe('nextPrimaryUnavailable', () => {
   test('clears when the deep model answers again', () => {
     expect(nextPrimaryUnavailable({
       outcome: served('deep', 'zai'), fallback: FALLBACK, wasUnavailable: true,
+    })).toBe(false);
+  });
+
+  test('clears when a provider-less secondary backstop answers', () => {
+    // Results stamped from an unlabeled attempt default to Z.ai, so a Z.ai
+    // backstop answer still ends the rate-limit window.
+    expect(nextPrimaryUnavailable({
+      outcome: served('fast', undefined), fallback: FALLBACK, wasUnavailable: true,
+    })).toBe(false);
+  });
+
+  test('a fast-provider answer or 429 never touches the Z.ai latch', () => {
+    expect(nextPrimaryUnavailable({
+      outcome: served('fast', 'fast'), fallback: FALLBACK, wasUnavailable: true,
+    })).toBe(true);
+    expect(nextPrimaryUnavailable({
+      outcome: { result: { tier: 'fast', provider: 'zai' }, primaryRateLimited: false, fastRateLimited: true },
+      fallback: FALLBACK, wasUnavailable: false,
     })).toBe(false);
   });
 

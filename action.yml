@@ -37,7 +37,7 @@ inputs:
     required: false
     default: ""
   FAST_MODEL:
-    description: "Fast-tier provider model (for example step-5-preview); replaces ZAI_MODEL_FAST when FAST_API_KEY is set"
+    description: "Fast-tier provider model (for example step-5-preview); replaces ZAI_MODEL_FAST when the fast-tier provider is enabled (FAST_API_KEY and FAST_API_URL must also be set)"
     required: false
     default: ""
   ZAI_REASONING_EFFORT:

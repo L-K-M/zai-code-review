@@ -552,7 +552,7 @@ function mapSecuritySeverityToReviewSeverity(severity) {
 }
 
 function supportsReasoningEffort(model) {
-  // Pinned to the families verified to advertise reasoning_effort: GLM 5.2+
+  // Pinned to the families verified to advertise reasoning_effort: GLM 5.2/5.3
   // and StepFun's step-3/step-5 chat models. step-1/step-2 predate the
   // parameter, and the digit run must end at the name's end or a dash so
   // vision/omni families like step-1v-* and step-1o-* stay excluded
@@ -1074,10 +1074,12 @@ async function reviewChunkWithFallbacks({
     },
   ];
   if (primary.degrade) {
-    primaryAttempts.push({ ...primary.degrade, tier: 'degraded', afterRateLimitOnly: true });
+    primaryAttempts.push({
+      provider: 'zai', ...primary.degrade, tier: 'degraded', afterRateLimitOnly: true,
+    });
   }
   if (primary.secondary) {
-    primaryAttempts.push({ ...primary.secondary, tier: primary.tier });
+    primaryAttempts.push({ provider: 'zai', ...primary.secondary, tier: primary.tier });
   }
   const fallbackAttempts = fallback
     ? [{
@@ -1094,7 +1096,7 @@ async function reviewChunkWithFallbacks({
   // Z.ai itself keeps the old order: it shares the rate-limited plan, so the
   // fallback is still the likelier answer.
   const degradeAttempt = primaryAttempts.find(attempt => attempt.afterRateLimitOnly);
-  const promotableDegrade = degradeAttempt && degradeAttempt.provider !== 'zai';
+  const promotableDegrade = degradeAttempt && (degradeAttempt.provider ?? 'zai') !== 'zai';
   const attempts = skipPrimary && fallback
     ? promotableDegrade
       ? [
@@ -1156,7 +1158,7 @@ function nextPrimaryUnavailable({ outcome, fallback, wasUnavailable }) {
   if (!outcome.result) {
     return wasUnavailable || outcome.primaryRateLimited;
   }
-  const zaiAnswered = outcome.result.provider === 'zai';
+  const zaiAnswered = (outcome.result.provider ?? 'zai') === 'zai';
   const answeredByDeputy = outcome.result.tier === 'degraded' && outcome.result.provider !== 'zai';
   return !zaiAnswered && !answeredByDeputy && (wasUnavailable || outcome.primaryRateLimited);
 }
