@@ -456,6 +456,9 @@ function buildModelRoutingNotice({ deepModel, fallbackModel, reviews }) {
     } else if (review.tier === 'fast' || review.tier === 'degraded') {
       const tierCounts = servedModels[review.tier];
       const model = review.model || 'unknown model';
+      if (!review.model) {
+        core?.warning(`Successful ${review.tier} review is missing 'model'; routing notice will show 'unknown model'`);
+      }
       tierCounts.set(model, (tierCounts.get(model) || 0) + 1);
     } else if (Object.hasOwn(counts, review.tier)) {
       counts[review.tier]++;
@@ -989,6 +992,11 @@ async function reviewChunkWithAdaptiveSplit({
 const FALLBACK_TIER = 'fallback';
 const FALLBACK_ERR_PREFIX = 'Fallback API: ';
 const FAST_ERR_PREFIX = 'Fast API: ';
+// While a rate-limited fast provider sits in the demoted backstop slot, this
+// many fast chunks pass before one full-strength probe tries it as primary
+// again — without it a single transient 429 would demote the provider for
+// the rest of the run whenever the Z.ai fast model keeps answering.
+const FAST_REPROBE_EVERY = 3;
 
 // Optional OpenAI-compatible providers validate identically: a key, an https
 // chat completions URL, and a model. A missing key disables silently (the
@@ -1009,6 +1017,7 @@ function parseOpenAiProvider({ apiKey, apiUrl, model, inputNames }) {
   }
   const problems = [];
   if (url?.protocol !== 'https:') problems.push(`${inputNames.url} must be an https URL`);
+  if (url && (url.username || url.password)) problems.push(`${inputNames.url} must not embed credentials`);
   if (!providerModel) problems.push(`${inputNames.model} is empty`);
   if (problems.length > 0) {
     core?.warning(`${inputNames.key} is set, but ${problems.join(' and ')}; the ${inputNames.label} is disabled.`);
@@ -1075,11 +1084,15 @@ async function reviewChunkWithFallbacks({
   ];
   if (primary.degrade) {
     primaryAttempts.push({
-      provider: 'zai', ...primary.degrade, tier: 'degraded', afterRateLimitOnly: true,
+      provider: 'zai', apiKey: primary.apiKey, apiOptions: primary.apiOptions,
+      ...primary.degrade, tier: 'degraded', afterRateLimitOnly: true,
     });
   }
   if (primary.secondary) {
-    primaryAttempts.push({ provider: 'zai', ...primary.secondary, tier: primary.tier });
+    primaryAttempts.push({
+      provider: 'zai', apiKey: primary.apiKey, apiOptions: primary.apiOptions,
+      ...primary.secondary, tier: primary.tier,
+    });
   }
   const fallbackAttempts = fallback
     ? [{
@@ -1704,6 +1717,7 @@ async function run() {
   const failedChunks = [];
   let primaryUnavailable = false;
   let fastUnavailable = false;
+  let fastDemotedStreak = 0;
 
   for (let i = 0; i < chunks.length; i++) {
     let tier = 'deep';
@@ -1731,7 +1745,11 @@ async function run() {
       ? { model: fastProvider.model, apiKey: fastProvider.apiKey, apiOptions: fastApiOptions, provider: 'fast' }
       : null;
     const zaiFastAttempt = { model: fastModel, apiKey, apiOptions, provider: 'zai' };
-    const providerHealthy = !!fastProviderAttempt && !fastUnavailable;
+    // Every FAST_REPROBE_EVERY-th fast chunk restores the provider as primary
+    // for one probe; an answer clears the latch, another failure just demotes
+    // it again, so a transient 429 never costs the rest of the run.
+    const probeFast = fastUnavailable && fastDemotedStreak >= FAST_REPROBE_EVERY;
+    const providerHealthy = !!fastProviderAttempt && (!fastUnavailable || probeFast);
     const onZai = !(tier === 'fast' && providerHealthy);
     const primary = onZai
       ? { ...zaiFastAttempt, model: tier === 'deep' ? deepModel : fastModel, tier }
@@ -1772,6 +1790,9 @@ async function run() {
     // A Z.ai rate limit usually lasts the plan window, so later chunks try the
     // fallback first; any Z.ai answer, including as a backstop, ends that.
     primaryUnavailable = nextPrimaryUnavailable({ outcome, fallback, wasUnavailable: primaryUnavailable });
+    if (tier === 'fast' && fastUnavailable) {
+      fastDemotedStreak = providerHealthy ? 0 : fastDemotedStreak + 1;
+    }
     fastUnavailable = nextFastUnavailable({ outcome, wasUnavailable: fastUnavailable });
     if (outcome.result) {
       outcome.result.labelForced = routeSource === 'label';

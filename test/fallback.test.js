@@ -112,6 +112,12 @@ describe('parseFastProvider', () => {
     expect(parseFastProvider({ apiKey: '   ', apiUrl: STEPFUN.apiUrl, model: STEPFUN.model })).toBeNull();
   });
 
+  test('rejects a URL with embedded credentials', () => {
+    expect(parseFastProvider({
+      apiKey: 'stepfun-key', apiUrl: 'https://user:pass@api.stepfun.ai/step_plan/v1/chat/completions', model: STEPFUN.model,
+    })).toBeNull();
+  });
+
   test('accepts a complete https provider', () => {
     expect(parseFastProvider({ apiKey: ' stepfun-key ', apiUrl: STEPFUN.apiUrl, model: ' step-5-preview ' }))
       .toEqual(STEPFUN);
@@ -265,14 +271,15 @@ describe('reviewChunkWithFallbacks', () => {
     ]);
   });
 
-  test('a rate-limited fast provider does not count as a Z.ai rate limit', async () => {
+  test('a non-429 fast-provider failure sets neither rate-limit flag', async () => {
     const { reviewChunk } = fakeReviewer({
-      'step-5-preview': httpError(429),
+      'step-5-preview': httpError(500),
       'glm-5.3-flash': 'zai fast review',
     });
     const outcome = await reviewChunkWithFallbacks({ chunk, primary: fastPrimary(), fallback: FALLBACK, label: 'Chunk 1/1', reviewChunk });
     expect(outcome.result.provider).toBe('zai');
     expect(outcome.primaryRateLimited).toBe(false);
+    expect(outcome.fastRateLimited).toBe(false);
   });
 
   test('degrades a rate-limited deep chunk to the fast provider before the fallback', async () => {

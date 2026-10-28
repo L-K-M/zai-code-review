@@ -359,7 +359,7 @@ For small PRs, all changes are sent in a single streaming API request. Larger PR
 | `FALLBACK_API_URL` | `https://token-plan-sgp.xiaomimimo.com/v1/chat/completions` | OpenAI-compatible fallback provider for chunks Z.ai fails on; pass `FALLBACK_API_KEY` from a secret |
 | `FALLBACK_MODEL` | `mimo-v2.6-pro` | Fallback provider model |
 | `FAST_API_URL` | `""` | Optional OpenAI-compatible provider serving the fast tier on its own quota (for example `https://api.stepfun.ai/step_plan/v1/chat/completions`); pass `FAST_API_KEY` from a secret |
-| `FAST_MODEL` | `""` | Fast-tier provider model (for example `step-5-preview`); replaces `ZAI_MODEL_FAST` when `FAST_API_KEY` is set |
+| `FAST_MODEL` | `""` | Fast-tier provider model (for example `step-5-preview`); replaces `ZAI_MODEL_FAST` when the fast-tier provider is enabled (`FAST_API_KEY` and `FAST_API_URL` must also be set) |
 | `ZAI_REASONING_EFFORT` | `high` | Reasoning effort for supported models: `low`, `high`, or `max` |
 | `ZAI_MAX_OUTPUT_TOKENS` | `32768` | Maximum output tokens per request |
 | `ZAI_REQUEST_TIMEOUT_SECONDS` | `900` | Inactivity timeout between response bytes; range 60–3600 seconds |
