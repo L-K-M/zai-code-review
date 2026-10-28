@@ -13,6 +13,7 @@ const {
   parseFallbackProvider,
   parseFastProvider,
   reviewChunkWithFallbacks,
+  nextPrimaryUnavailable,
 } = require('../src/index');
 
 const FALLBACK = {
@@ -317,6 +318,52 @@ describe('reviewChunkWithFallbacks', () => {
     });
     expect(outcome.result.tier).toBe('fallback');
     expect(calls.map(call => call.model)).toEqual(['mimo-v2.6-pro']);
+  });
+});
+
+describe('nextPrimaryUnavailable', () => {
+  const served = (tier, provider) => ({ result: { tier, provider }, primaryRateLimited: false });
+  const limited = outcome => ({ ...outcome, primaryRateLimited: true });
+
+  test('stays off without a configured fallback', () => {
+    expect(nextPrimaryUnavailable({
+      outcome: limited({ error: 'boom' }), fallback: null, wasUnavailable: false,
+    })).toBe(false);
+  });
+
+  test('latches when the outage fallback serves after a Z.ai 429', () => {
+    expect(nextPrimaryUnavailable({
+      outcome: limited(served('fallback', 'fallback')), fallback: FALLBACK, wasUnavailable: false,
+    })).toBe(true);
+  });
+
+  test('keeps the latch while the fallback keeps serving', () => {
+    expect(nextPrimaryUnavailable({
+      outcome: served('fallback', 'fallback'), fallback: FALLBACK, wasUnavailable: true,
+    })).toBe(true);
+  });
+
+  test('clears on any Z.ai answer, including a backstop degrade', () => {
+    expect(nextPrimaryUnavailable({
+      outcome: served('degraded', 'zai'), fallback: FALLBACK, wasUnavailable: true,
+    })).toBe(false);
+  });
+
+  test('clears after a deputy-served degrade so Z.ai is re-probed next', () => {
+    // A StepFun answer says nothing about Z.ai's health, but keeping the
+    // latch would pin every later deep chunk on the deputy for the run.
+    expect(nextPrimaryUnavailable({
+      outcome: limited(served('degraded', 'fast')), fallback: FALLBACK, wasUnavailable: false,
+    })).toBe(false);
+    expect(nextPrimaryUnavailable({
+      outcome: served('degraded', 'fast'), fallback: FALLBACK, wasUnavailable: true,
+    })).toBe(false);
+  });
+
+  test('latches when every attempt fails and Z.ai rate-limited', () => {
+    expect(nextPrimaryUnavailable({
+      outcome: limited({ error: 'all failed' }), fallback: FALLBACK, wasUnavailable: false,
+    })).toBe(true);
   });
 });
 

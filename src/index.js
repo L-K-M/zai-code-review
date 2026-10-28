@@ -1136,6 +1136,25 @@ async function reviewChunkWithFallbacks({
   return { error: errors.join('; '), primaryRateLimited };
 }
 
+// Advances the "Z.ai is rate-limited" latch after a chunk outcome. It only
+// exists while an outage fallback is configured (without one there is nothing
+// to reorder toward). A Z.ai answer anywhere, including as a backstop, ends
+// the window. A chunk served by a deputy on another provider clears it too:
+// it neither proves Z.ai is back nor should keep degrade-first order latched,
+// so the next deep chunk re-probes Z.ai. A chunk the fallback had to serve
+// keeps it — then the promoted deputy order still beats the fallback.
+function nextPrimaryUnavailable({ outcome, fallback, wasUnavailable }) {
+  if (!fallback) {
+    return false;
+  }
+  if (!outcome.result) {
+    return wasUnavailable || outcome.primaryRateLimited;
+  }
+  const zaiAnswered = outcome.result.provider === 'zai';
+  const answeredByDeputy = outcome.result.tier === 'degraded' && outcome.result.provider !== 'zai';
+  return !zaiAnswered && !answeredByDeputy && (wasUnavailable || outcome.primaryRateLimited);
+}
+
 async function reviewOneChunk({
   apiKey,
   model,
@@ -1727,8 +1746,7 @@ async function run() {
     });
     // A Z.ai rate limit usually lasts the plan window, so later chunks try the
     // fallback first; any Z.ai answer, including as a backstop, ends that.
-    const zaiAnswered = outcome.result?.provider === 'zai';
-    primaryUnavailable = !!fallback && !zaiAnswered && (primaryUnavailable || outcome.primaryRateLimited);
+    primaryUnavailable = nextPrimaryUnavailable({ outcome, fallback, wasUnavailable: primaryUnavailable });
     if (outcome.result) {
       outcome.result.labelForced = routeSource === 'label';
       reviews.push(outcome.result);
@@ -1878,6 +1896,7 @@ module.exports = {
   parseFallbackProvider,
   parseFastProvider,
   reviewChunkWithFallbacks,
+  nextPrimaryUnavailable,
   extractActionableSuggestions,
   formatApiRequestLabel,
   formatChunkMergeSummary,

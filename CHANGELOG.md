@@ -14,9 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the Z.ai fast model as the same-tier backstop
 - `reasoning_effort` is also sent for StepFun's numbered `step-*` models,
   which advertise support for it
-- While Z.ai is rate-limited, a rate-limit degrade target on another provider
-  leads the attempt order for later deep chunks instead of the outage
-  fallback; a deputy on Z.ai itself keeps fallback-first order
+- While the outage fallback is covering for a rate-limited Z.ai, a degrade
+  deputy on another provider leads the attempt order for later deep chunks;
+  a deputy-served chunk then releases the latch so the next deep chunk
+  re-probes Z.ai first
 
 ### Fixed
 - `dist/licenses.txt` includes the notices for llhttp (WebAssembly inside
