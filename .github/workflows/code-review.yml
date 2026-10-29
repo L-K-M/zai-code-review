@@ -26,7 +26,7 @@ jobs:
       - name: Code Review
         id: review
         timeout-minutes: 170
-        uses: L-K-M/zai-code-review@v0.0.15
+        uses: L-K-M/zai-code-review@b44215f6c1b4fb7eeacad0756449d45b66f3c4ff # v0.0.16
         with:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           # Xiaomi MiMo reviews the chunks Z.ai still fails on (rate limits,
@@ -34,6 +34,12 @@ jobs:
           FALLBACK_API_KEY: ${{ secrets.MIMO_API_KEY }}
           FALLBACK_API_URL: https://token-plan-sgp.xiaomimimo.com/v1/chat/completions
           FALLBACK_MODEL: mimo-v2.6-pro
+          # StepFun's step-5-preview handles fast-tier and degraded reviews on
+          # its own quota; GLM keeps deep and escalated reviews. An empty
+          # STEPFUN_API_KEY secret keeps everything on Z.ai like before.
+          FAST_API_KEY: ${{ secrets.STEPFUN_API_KEY }}
+          FAST_API_URL: https://api.stepfun.ai/step_plan/v1/chat/completions
+          FAST_MODEL: step-5-preview
           ZAI_MODEL: ${{ vars.ZAI_MODEL || 'glm-5.3' }}
           ZAI_MODEL_FAST: ${{ vars.ZAI_MODEL_FAST || 'glm-5.3-flash' }}
           ZAI_REASONING_EFFORT: ${{ vars.ZAI_REASONING_EFFORT || 'high' }}
