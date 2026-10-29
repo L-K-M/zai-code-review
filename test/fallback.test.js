@@ -373,6 +373,29 @@ describe('reviewChunkWithFallbacks', () => {
     expect(calls.map(call => call.model)).toEqual(['mimo-v2.6-pro']);
   });
 
+  test('skips a deputy with its own credentials but no provider tag', async () => {
+    // A fully-credentialed foreign attempt without a provider field would
+    // misroute its 429s into the Z.ai latch, so it is skipped entirely.
+    const { reviewChunk, calls } = fakeReviewer({
+      'mimo-v2.6-pro': 'mimo review',
+      'glm-5.3': httpError(429),
+    });
+    const outcome = await reviewChunkWithFallbacks({
+      chunk,
+      primary: primary({
+        degrade: {
+          model: 'step-5-preview',
+          apiKey: STEPFUN.apiKey,
+          apiOptions: { maxOutputTokens: 98304, endpoint: STEPFUN.apiUrl },
+        },
+      }),
+      fallback: FALLBACK, label: 'Chunk 2/2', reviewChunk,
+    });
+    expect(outcome.result.tier).toBe('fallback');
+    expect(outcome.primaryRateLimited).toBe(true);
+    expect(calls.map(call => call.model)).toEqual(['glm-5.3', 'mimo-v2.6-pro']);
+  });
+
   test('skips a provider-less secondary behind a fast-provider primary instead of sending the fast key', async () => {
     // Mirror of the deputy guard: a Z.ai-flagged backstop that carries no
     // credentials must not inherit the fast provider's key and endpoint.

@@ -1099,27 +1099,43 @@ async function reviewChunkWithFallbacks({
   // implicit) — otherwise the primary key would be sent to a foreign API. A
   // partially configured one is skipped rather than leaking the key.
   const primaryProvider = primary.provider || 'zai';
+  const warnDeputyOnce = message => {
+    if (!warnedBadDeputy) {
+      warnedBadDeputy = true;
+      core?.warning(message);
+    }
+  };
   const withProviderDefaults = attempt => {
-    const { apiKey, apiOptions, provider: attemptProvider, ...rest } = attempt;
-    const provider = attemptProvider || 'zai';
-    if (provider !== primaryProvider
-        && (!apiKey || (provider !== 'zai' && !apiOptions?.endpoint))) {
-      if (!warnedBadDeputy) {
-        warnedBadDeputy = true;
-        core?.warning(`${label}: ignoring ${provider} attempt without its own apiKey${provider === 'zai' ? '' : ' and endpoint'}`);
-      }
+    const { apiKey, apiOptions, apiUrl, provider: attemptProvider, ...rest } = attempt;
+    // Factory-shaped deputies may carry apiUrl; normalize it into options.
+    const attemptOptions = apiUrl && !apiOptions?.endpoint
+      ? { ...apiOptions, endpoint: apiUrl }
+      : apiOptions;
+    // A deputy with its own credentials but no provider tag can't be
+    // classified — guessing 'zai' would misroute its 429s into the Z.ai latch.
+    if (!attemptProvider && (apiKey || attemptOptions?.endpoint)) {
+      warnDeputyOnce(`${label}: ignoring deputy with its own credentials but no provider tag`);
       return null;
     }
-    // Provider-boundary fields (endpoint, errorPrefix) never cross providers:
-    // a Z.ai backstop behind a foreign primary keeps the Z.ai default endpoint.
-    const inherited = { ...primary.apiOptions };
-    if (provider !== primaryProvider) {
-      delete inherited.endpoint;
-      delete inherited.errorPrefix;
+    const provider = attemptProvider || 'zai';
+    if (provider !== primaryProvider
+        && (!apiKey || (provider !== 'zai' && !attemptOptions?.endpoint))) {
+      warnDeputyOnce(`${label}: ignoring ${provider} attempt without its own apiKey${provider === 'zai' ? '' : ' and endpoint'}`);
+      return null;
     }
+    // Cross-provider attempts inherit only provider-agnostic options (output
+    // size, reasoning effort, timeout) — endpoint, errorPrefix, and anything
+    // provider-bound never cross the boundary.
+    const inherited = provider === primaryProvider
+      ? { ...primary.apiOptions }
+      : {
+        reasoningEffort: primary.apiOptions?.reasoningEffort,
+        maxOutputTokens: primary.apiOptions?.maxOutputTokens,
+        requestTimeoutMs: primary.apiOptions?.requestTimeoutMs,
+      };
     return {
       apiKey: apiKey || primary.apiKey,
-      apiOptions: { ...inherited, ...apiOptions },
+      apiOptions: { ...inherited, ...attemptOptions },
       provider,
       ...rest,
     };
