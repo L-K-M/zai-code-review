@@ -999,6 +999,9 @@ const FAST_ERR_PREFIX = 'Fast API: ';
 // again — without it a single transient 429 would demote the provider for
 // the rest of the run whenever the Z.ai fast model keeps answering.
 const FAST_REPROBE_EVERY = 3;
+// De-dupes the warning for a misconfigured cross-provider deputy/backstop
+// (it would otherwise fire once per chunk for the whole run).
+let warnedBadDeputy = false;
 
 // Optional OpenAI-compatible providers validate identically: a key, an https
 // chat completions URL, and a model. A missing key disables silently (the
@@ -1084,17 +1087,34 @@ async function reviewChunkWithFallbacks({
       apiOptions: primary.apiOptions,
     },
   ];
-  // A deputy on another provider must carry its own credentials and endpoint;
-  // the Z.ai defaults below would otherwise send the primary key to a foreign
-  // API. A partially configured one is skipped rather than leaking the key.
+  // A deputy on a provider other than the primary's must carry its own
+  // credentials (and its own endpoint when it isn't Z.ai, whose endpoint is
+  // implicit) — otherwise the primary key would be sent to a foreign API. A
+  // partially configured one is skipped rather than leaking the key.
+  const primaryProvider = primary.provider || 'zai';
   const withProviderDefaults = attempt => {
-    const provider = attempt.provider || 'zai';
-    if (provider !== 'zai' && (!attempt.apiKey || !attempt.apiOptions?.endpoint)) {
-      core?.warning(`${label}: ignoring ${provider} attempt without its own apiKey and endpoint`);
+    const { apiKey, apiOptions, provider: attemptProvider, ...rest } = attempt;
+    const provider = attemptProvider || 'zai';
+    if (provider !== primaryProvider
+        && (!apiKey || (provider !== 'zai' && !apiOptions?.endpoint))) {
+      if (!warnedBadDeputy) {
+        warnedBadDeputy = true;
+        core?.warning(`${label}: ignoring ${provider} attempt without its own apiKey${provider === 'zai' ? '' : ' and endpoint'}`);
+      }
       return null;
     }
+    // Provider-boundary fields (endpoint, errorPrefix) never cross providers:
+    // a Z.ai backstop behind a foreign primary keeps the Z.ai default endpoint.
+    const inherited = { ...primary.apiOptions };
+    if (provider !== primaryProvider) {
+      delete inherited.endpoint;
+      delete inherited.errorPrefix;
+    }
     return {
-      provider, apiKey: primary.apiKey, apiOptions: primary.apiOptions, ...attempt,
+      apiKey: apiKey || primary.apiKey,
+      apiOptions: { ...inherited, ...apiOptions },
+      provider,
+      ...rest,
     };
   };
   if (primary.degrade) {
@@ -1109,7 +1129,7 @@ async function reviewChunkWithFallbacks({
     ? [{
       model: fallback.model,
       tier: FALLBACK_TIER,
-      provider: FALLBACK_TIER,
+      provider: 'fallback',
       apiKey: fallback.apiKey,
       apiOptions: { ...primary.apiOptions, endpoint: fallback.apiUrl, errorPrefix: FALLBACK_ERR_PREFIX },
     }]
@@ -1183,8 +1203,8 @@ function nextPrimaryUnavailable({ outcome, fallback, wasUnavailable }) {
     return wasUnavailable || outcome.primaryRateLimited;
   }
   const zaiAnswered = (outcome.result.provider ?? 'zai') === 'zai';
-  const answeredByDeputy = outcome.result.tier === 'degraded' && outcome.result.provider !== 'zai';
-  return !zaiAnswered && !answeredByDeputy && (wasUnavailable || outcome.primaryRateLimited);
+  const answeredOffZai = (outcome.result.provider ?? 'zai') !== 'zai' && outcome.result.tier !== FALLBACK_TIER;
+  return !zaiAnswered && !answeredOffZai && (wasUnavailable || outcome.primaryRateLimited);
 }
 
 // The matching latch for a dedicated fast provider. It engages on the
@@ -1557,9 +1577,9 @@ async function run() {
     apiUrl: core.getInput('FALLBACK_API_URL'),
     model: core.getInput('FALLBACK_MODEL'),
   });
-  const fastApiKey = core.getInput('FAST_API_KEY');
-  if (fastApiKey.trim()) {
-    core.setSecret(fastApiKey.trim());
+  const fastApiKey = core.getInput('FAST_API_KEY').trim();
+  if (fastApiKey) {
+    core.setSecret(fastApiKey);
   }
   // The dedicated fast provider only matters with two-tier routing; without a
   // distinct fast model there is no fast tier to serve.
@@ -1570,7 +1590,7 @@ async function run() {
       apiUrl: core.getInput('FAST_API_URL'),
       model: core.getInput('FAST_MODEL'),
     });
-  } else if (fastApiKey.trim()) {
+  } else if (fastApiKey) {
     core.warning('FAST_API_KEY is set, but two-tier model routing is not enabled; the fast provider is ignored.');
   }
   const fastApiOptions = fastProvider

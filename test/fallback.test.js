@@ -125,6 +125,7 @@ describe('parseFastProvider', () => {
 
   test.each([
     ['a missing model', { apiUrl: STEPFUN.apiUrl, model: '' }],
+    ['a missing URL', { apiUrl: '', model: STEPFUN.model }],
     ['a non-https URL', { apiUrl: 'http://api.stepfun.ai/step_plan/v1/chat/completions', model: STEPFUN.model }],
     ['an invalid URL', { apiUrl: 'not a url', model: STEPFUN.model }],
   ])('is disabled by %s', (_name, input) => {
@@ -252,7 +253,7 @@ describe('reviewChunkWithFallbacks', () => {
       'glm-5.3-flash': 'zai fast review',
     });
     const outcome = await reviewChunkWithFallbacks({ chunk, primary: fastPrimary(), fallback: FALLBACK, label: 'Chunk 1/1', reviewChunk });
-    expect(outcome.result).toMatchObject({ rawReview: 'zai fast review', provider: 'zai' });
+    expect(outcome.result).toMatchObject({ rawReview: 'zai fast review', provider: 'zai', model: 'glm-5.3-flash' });
     expect(outcome.fastRateLimited).toBe(true);
     expect(outcome.primaryRateLimited).toBe(false);
     expect(calls.map(call => call.model)).toEqual(['step-5-preview', 'glm-5.3-flash']);
@@ -264,7 +265,7 @@ describe('reviewChunkWithFallbacks', () => {
       'glm-5.3-flash': 'zai fast review',
     });
     const outcome = await reviewChunkWithFallbacks({ chunk, primary: fastPrimary(), fallback: FALLBACK, label: 'Chunk 1/1', reviewChunk });
-    expect(outcome.result).toMatchObject({ rawReview: 'zai fast review', tier: 'fast', provider: 'zai' });
+    expect(outcome.result).toMatchObject({ rawReview: 'zai fast review', tier: 'fast', provider: 'zai', model: 'glm-5.3-flash' });
     expect(calls).toEqual([
       { model: 'step-5-preview', apiKey: 'stepfun-key', endpoint: STEPFUN.apiUrl },
       { model: 'glm-5.3-flash', apiKey: 'zai-key', endpoint: undefined },
@@ -301,7 +302,7 @@ describe('reviewChunkWithFallbacks', () => {
       label: 'Chunk 1/1',
       reviewChunk,
     });
-    expect(outcome.result).toMatchObject({ rawReview: 'stepfun review', tier: 'degraded', provider: 'fast' });
+    expect(outcome.result).toMatchObject({ rawReview: 'stepfun review', tier: 'degraded', provider: 'fast', model: 'step-5-preview' });
     expect(outcome.primaryRateLimited).toBe(true);
     expect(calls).toEqual([
       { model: 'glm-5.3', apiKey: 'zai-key', endpoint: undefined },
@@ -326,7 +327,7 @@ describe('reviewChunkWithFallbacks', () => {
       label: 'Chunk 2/2',
       reviewChunk,
     });
-    expect(outcome.result).toMatchObject({ rawReview: 'stepfun review', tier: 'degraded', provider: 'fast' });
+    expect(outcome.result).toMatchObject({ rawReview: 'stepfun review', tier: 'degraded', provider: 'fast', model: 'step-5-preview' });
     expect(calls).toEqual([
       { model: 'step-5-preview', apiKey: 'stepfun-key', endpoint: STEPFUN.apiUrl },
     ]);
@@ -347,7 +348,15 @@ describe('reviewChunkWithFallbacks', () => {
     expect(calls.map(call => call.model)).toEqual(['mimo-v2.6-pro']);
   });
 
-  test('skips a foreign deputy missing its own key or endpoint instead of sending the Z.ai key', async () => {
+  test.each([
+    ['no key and no endpoint', { model: 'step-5-preview', provider: 'fast' }],
+    ['a key but no endpoint', { model: 'step-5-preview', provider: 'fast', apiKey: STEPFUN.apiKey }],
+    ['an endpoint but no key', {
+      model: 'step-5-preview',
+      provider: 'fast',
+      apiOptions: { maxOutputTokens: 98304, endpoint: STEPFUN.apiUrl, errorPrefix: 'Fast API: ' },
+    }],
+  ])('skips a foreign deputy with %s instead of sending the Z.ai key', async (_name, degrade) => {
     // A partially configured cross-provider degrade must be dropped, not
     // completed with the primary's credentials — those would leak to a
     // third-party API.
@@ -357,13 +366,27 @@ describe('reviewChunkWithFallbacks', () => {
     });
     const outcome = await reviewChunkWithFallbacks({
       chunk,
-      primary: primary({
-        degrade: { model: 'step-5-preview', provider: 'fast' },
-      }),
+      primary: primary({ degrade }),
       fallback: FALLBACK, skipPrimary: true, label: 'Chunk 2/2', reviewChunk,
     });
     expect(outcome.result.tier).toBe('fallback');
     expect(calls.map(call => call.model)).toEqual(['mimo-v2.6-pro']);
+  });
+
+  test('skips a provider-less secondary behind a fast-provider primary instead of sending the fast key', async () => {
+    // Mirror of the deputy guard: a Z.ai-flagged backstop that carries no
+    // credentials must not inherit the fast provider's key and endpoint.
+    const { reviewChunk, calls } = fakeReviewer({
+      'step-5-preview': httpError(503),
+      'mimo-v2.6-pro': 'mimo review',
+    });
+    const outcome = await reviewChunkWithFallbacks({
+      chunk,
+      primary: fastPrimary({ secondary: { model: 'glm-5.3-flash', provider: 'zai' } }),
+      fallback: FALLBACK, label: 'Chunk 1/1', reviewChunk,
+    });
+    expect(outcome.result.tier).toBe('fallback');
+    expect(calls.map(call => call.model)).toEqual(['step-5-preview', 'mimo-v2.6-pro']);
   });
 
   test('keeps the outage fallback first when the degrade is on the rate-limited plan', async () => {
@@ -418,10 +441,12 @@ describe('nextPrimaryUnavailable', () => {
     })).toBe(false);
   });
 
-  test('a fast-provider answer or 429 never touches the Z.ai latch', () => {
+  test('a fast-provider answer releases the latch; its 429 never engages it', () => {
+    // Any non-fallback answer off Z.ai releases the latch so the next deep
+    // chunk re-probes Z.ai — same rule as a degraded deputy answer.
     expect(nextPrimaryUnavailable({
       outcome: served('fast', 'fast'), fallback: FALLBACK, wasUnavailable: true,
-    })).toBe(true);
+    })).toBe(false);
     expect(nextPrimaryUnavailable({
       outcome: { result: { tier: 'fast', provider: 'zai' }, primaryRateLimited: false, fastRateLimited: true },
       fallback: FALLBACK, wasUnavailable: false,
