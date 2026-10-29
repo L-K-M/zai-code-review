@@ -457,13 +457,15 @@ function buildModelRoutingNotice({ deepModel, fallbackModel, reviews }) {
   // Fast and degraded chunks can be served by more than one provider, so
   // they are credited to the model that actually answered.
   const servedModels = { fast: new Map(), degraded: new Map() };
+  let warnedMissingModel = false;
   for (const review of reviews) {
     if (!review.success) {
       counts.failed++;
     } else if (review.tier === 'fast' || review.tier === 'degraded') {
       const tierCounts = servedModels[review.tier];
       const model = review.model || 'unknown model';
-      if (!review.model) {
+      if (!review.model && !warnedMissingModel) {
+        warnedMissingModel = true;
         core?.warning(`Successful ${review.tier} review is missing 'model'; routing notice will show 'unknown model'`);
       }
       tierCounts.set(model, (tierCounts.get(model) || 0) + 1);
@@ -1089,17 +1091,26 @@ async function reviewChunkWithFallbacks({
       apiOptions: primary.apiOptions,
     },
   ];
+  // A deputy on another provider must carry its own credentials and endpoint;
+  // the Z.ai defaults below would otherwise send the primary key to a foreign
+  // API. A partially configured one is skipped rather than leaking the key.
+  const withProviderDefaults = attempt => {
+    const provider = attempt.provider || 'zai';
+    if (provider !== 'zai' && (!attempt.apiKey || !attempt.apiOptions?.endpoint)) {
+      core?.warning(`${label}: ignoring ${provider} attempt without its own apiKey and endpoint`);
+      return null;
+    }
+    return {
+      provider, apiKey: primary.apiKey, apiOptions: primary.apiOptions, ...attempt,
+    };
+  };
   if (primary.degrade) {
-    primaryAttempts.push({
-      provider: 'zai', apiKey: primary.apiKey, apiOptions: primary.apiOptions,
-      ...primary.degrade, tier: 'degraded', afterRateLimitOnly: true,
-    });
+    const deputy = withProviderDefaults({ ...primary.degrade, tier: 'degraded', afterRateLimitOnly: true });
+    if (deputy) primaryAttempts.push(deputy);
   }
   if (primary.secondary) {
-    primaryAttempts.push({
-      provider: 'zai', apiKey: primary.apiKey, apiOptions: primary.apiOptions,
-      ...primary.secondary, tier: primary.tier,
-    });
+    const backstop = withProviderDefaults({ ...primary.secondary, tier: primary.tier });
+    if (backstop) primaryAttempts.push(backstop);
   }
   const fallbackAttempts = fallback
     ? [{
@@ -1801,6 +1812,9 @@ async function run() {
       fastDemotedStreak = providerHealthy ? 0 : fastDemotedStreak + 1;
     }
     fastUnavailable = nextFastUnavailable({ outcome, wasUnavailable: fastUnavailable });
+    if (!fastUnavailable) {
+      fastDemotedStreak = 0;
+    }
     if (outcome.result) {
       outcome.result.labelForced = routeSource === 'label';
       reviews.push(outcome.result);

@@ -347,6 +347,25 @@ describe('reviewChunkWithFallbacks', () => {
     expect(calls.map(call => call.model)).toEqual(['mimo-v2.6-pro']);
   });
 
+  test('skips a foreign deputy missing its own key or endpoint instead of sending the Z.ai key', async () => {
+    // A partially configured cross-provider degrade must be dropped, not
+    // completed with the primary's credentials — those would leak to a
+    // third-party API.
+    const { reviewChunk, calls } = fakeReviewer({
+      'mimo-v2.6-pro': 'mimo review',
+      'glm-5.3': httpError(429),
+    });
+    const outcome = await reviewChunkWithFallbacks({
+      chunk,
+      primary: primary({
+        degrade: { model: 'step-5-preview', provider: 'fast' },
+      }),
+      fallback: FALLBACK, skipPrimary: true, label: 'Chunk 2/2', reviewChunk,
+    });
+    expect(outcome.result.tier).toBe('fallback');
+    expect(calls.map(call => call.model)).toEqual(['mimo-v2.6-pro']);
+  });
+
   test('keeps the outage fallback first when the degrade is on the rate-limited plan', async () => {
     const { reviewChunk, calls } = fakeReviewer({ 'mimo-v2.6-pro': 'mimo review' });
     const outcome = await reviewChunkWithFallbacks({
