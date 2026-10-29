@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-10-28
+
+### Added
+- Optional dedicated provider for the fast tier (`FAST_API_KEY`,
+  `FAST_API_URL`, `FAST_MODEL`), such as StepFun: fast-routed chunks and the
+  rate-limit degrade target run on its own quota instead of the Z.ai plan,
+  with the Z.ai fast model as the same-tier backstop
+- `reasoning_effort` is also sent for StepFun's numbered `step-*` models,
+  which advertise support for it
+- While the outage fallback is covering for a rate-limited Z.ai, a degrade
+  deputy on another provider leads the attempt order for later deep chunks;
+  a deputy-served chunk then releases the latch so the next deep chunk
+  re-probes Z.ai first
+
 ### Fixed
 - `dist/licenses.txt` includes the notices for llhttp (WebAssembly inside
   undici) and the webpack runtime, and the build fails when a bundled
@@ -305,3 +319,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.0.12]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.12
 
 [0.0.13]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.13
+
+[0.0.16]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.16

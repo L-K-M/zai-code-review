@@ -636,6 +636,19 @@ describe('Z.ai request configuration', () => {
     expect(body.stream).toBe(true);
   });
 
+  test.each([
+    ['step-5-preview', true],
+    ['step-3-flash', true],
+    ['step-1', false],
+    ['step-2', false],
+    ['step-1v-8k', false],
+    ['step-1o-turbo-v2', false],
+    ['stepaudio-chat', false],
+  ])('reasoning_effort for %s: %s', (model, supported) => {
+    const body = buildZaiRequestBody(model, 'system', 'prompt');
+    expect(body.reasoning_effort).toBe(supported ? 'high' : undefined);
+  });
+
   test('parses streamed content and completion markers', () => {
     expect(parseSseEventData('data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}')).toEqual(
       expect.objectContaining({ reasoningContent: 'thinking', content: '', done: false })
