@@ -644,14 +644,9 @@ describe('Z.ai request configuration', () => {
     ['step-1v-8k', false],
     ['step-1o-turbo-v2', false],
     ['stepaudio-chat', false],
-  ])('sends reasoning effort to %s: %s', (model, supported) => {
+  ])('reasoning_effort for %s: %s', (model, supported) => {
     const body = buildZaiRequestBody(model, 'system', 'prompt');
-
-    if (supported) {
-      expect(body.reasoning_effort).toBe('high');
-    } else {
-      expect(body.reasoning_effort).toBeUndefined();
-    }
+    expect(body.reasoning_effort).toBe(supported ? 'high' : undefined);
   });
 
   test('parses streamed content and completion markers', () => {

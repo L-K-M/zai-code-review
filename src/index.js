@@ -999,9 +999,9 @@ const FAST_ERR_PREFIX = 'Fast API: ';
 // again — without it a single transient 429 would demote the provider for
 // the rest of the run whenever the Z.ai fast model keeps answering.
 const FAST_REPROBE_EVERY = 3;
-// De-dupes the warning for a misconfigured cross-provider deputy/backstop
-// (it would otherwise fire once per chunk for the whole run).
-let warnedBadDeputy = false;
+// De-dupes misconfigured deputy/backstop warnings per problem kind — without
+// it each would fire once per chunk for the rest of the run.
+const warnedDeputyKinds = new Set();
 
 // Optional OpenAI-compatible providers validate identically: a key, an https
 // chat completions URL, and a model. A missing key disables silently (the
@@ -1092,9 +1092,9 @@ async function reviewChunkWithFallbacks({
   // implicit) — otherwise the primary key would be sent to a foreign API. A
   // partially configured one is skipped rather than leaking the key.
   const primaryProvider = primary.provider || 'zai';
-  const warnDeputyOnce = message => {
-    if (!warnedBadDeputy) {
-      warnedBadDeputy = true;
+  const warnDeputyOnce = (kind, message) => {
+    if (!warnedDeputyKinds.has(kind)) {
+      warnedDeputyKinds.add(kind);
       core?.warning(message);
     }
   };
@@ -1107,13 +1107,13 @@ async function reviewChunkWithFallbacks({
     // A deputy with its own credentials but no provider tag can't be
     // classified — guessing 'zai' would misroute its 429s into the Z.ai latch.
     if (!attemptProvider && (apiKey || attemptOptions?.endpoint)) {
-      warnDeputyOnce(`${label}: ignoring deputy with its own credentials but no provider tag`);
+      warnDeputyOnce('untagged-credentials', `${label}: ignoring deputy with its own credentials but no provider tag`);
       return null;
     }
     const provider = attemptProvider || 'zai';
     if (provider !== primaryProvider
         && (!apiKey || (provider !== 'zai' && !attemptOptions?.endpoint))) {
-      warnDeputyOnce(`${label}: ignoring ${provider} attempt without its own apiKey${provider === 'zai' ? '' : ' and endpoint'}`);
+      warnDeputyOnce('missing-credentials', `${label}: ignoring ${provider} attempt without its own apiKey${provider === 'zai' ? '' : ' and endpoint'}`);
       return null;
     }
     // Cross-provider attempts inherit only provider-agnostic options (output

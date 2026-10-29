@@ -319,3 +319,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.0.12]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.12
 
 [0.0.13]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.13
+
+[0.0.16]: https://github.com/L-K-M/zai-code-review/releases/tag/v0.0.16

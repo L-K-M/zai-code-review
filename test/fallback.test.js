@@ -259,6 +259,19 @@ describe('reviewChunkWithFallbacks', () => {
     expect(calls.map(call => call.model)).toEqual(['step-5-preview', 'glm-5.3-flash']);
   });
 
+  test('keeps fastRateLimited when the provider 429s and every backstop fails too', async () => {
+    const { reviewChunk, calls } = fakeReviewer({
+      'step-5-preview': httpError(429),
+      'glm-5.3-flash': httpError(500),
+      'mimo-v2.6-pro': 'mimo review',
+    });
+    const outcome = await reviewChunkWithFallbacks({ chunk, primary: fastPrimary(), fallback: FALLBACK, label: 'Chunk 1/1', reviewChunk });
+    expect(outcome.result.tier).toBe('fallback');
+    expect(outcome.fastRateLimited).toBe(true);
+    expect(outcome.primaryRateLimited).toBe(false);
+    expect(calls.map(call => call.model)).toEqual(['step-5-preview', 'glm-5.3-flash', 'mimo-v2.6-pro']);
+  });
+
   test('falls back to the Z.ai fast model when the fast provider fails', async () => {
     const { reviewChunk, calls } = fakeReviewer({
       'step-5-preview': httpError(503),
