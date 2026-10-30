@@ -25,7 +25,11 @@ function queueStreams(streams) {
       response.statusCode = 200;
       response.headers = { 'content-type': 'text/event-stream' };
       onResponse(response);
-      response.emit('data', Buffer.from(`${streams.shift()}data: [DONE]\n\n`));
+      const next = streams.shift();
+      if (!next) {
+        throw new Error(`request ${bodies.length} has no stream queued`);
+      }
+      response.emit('data', Buffer.from(`${next}data: [DONE]\n\n`));
       response.emit('end');
     };
     return request;
@@ -33,7 +37,7 @@ function queueStreams(streams) {
   return bodies;
 }
 
-function review(files, model = 'glm-5.3') {
+function review(files, model = 'glm-5.3', reasoningEffort = 'high') {
   return reviewOneChunk({
     apiKey: 'key',
     model,
@@ -42,7 +46,7 @@ function review(files, model = 'glm-5.3') {
     chunkIndex: 0,
     totalChunks: 1,
     maxChunkSize: 25000,
-    apiOptions: { reasoningEffort: 'high' },
+    apiOptions: { reasoningEffort },
     scopeMode: 'full',
     customPatterns: [],
   });
@@ -64,6 +68,7 @@ describe('a section that reaches the output token limit', () => {
 
     expect(result.rawReview).toBe('Looks fine.');
     expect(bodies.map(body => body.reasoning_effort)).toEqual(['high', 'low']);
+    expect(bodies[1]).toEqual({ ...bodies[0], reasoning_effort: 'low' });
   });
 
   test('is split as before when low reasoning effort also overflows', async () => {
@@ -80,16 +85,19 @@ describe('a section that reaches the output token limit', () => {
     expect(bodies.map(body => body.reasoning_effort)).toEqual(['high', 'low', 'low', 'low']);
   });
 
-  test('keeps its effort for a model without reasoning effort', async () => {
+  test.each([
+    ['a model without reasoning effort', 'mimo-v2.6-pro', 'high', undefined],
+    ['a section already at low effort', 'glm-5.3', 'low', 'low'],
+  ])('keeps its effort for %s', async (_name, model, effort, sent) => {
     jest.useFakeTimers();
     try {
       const bodies = queueStreams([LENGTH, STOP]);
 
-      const pending = review([FILE], 'mimo-v2.6-pro');
+      const pending = review([FILE], model, effort);
       await jest.runAllTimersAsync();
 
       expect((await pending).rawReview).toBe('Looks fine.');
-      expect(bodies.map(body => body.reasoning_effort)).toEqual([undefined, undefined]);
+      expect(bodies.map(body => body.reasoning_effort)).toEqual([sent, sent]);
     } finally {
       jest.useRealTimers();
     }
