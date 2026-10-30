@@ -42,6 +42,7 @@ const MAX_COMMENT_SIZE = 65000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 32768;
 const DEFAULT_REASONING_EFFORT = 'high';
+const LOW_REASONING_EFFORT = 'low';
 const PER_PAGE = 100;
 const DEFAULT_MAX_CHUNK_SIZE = 25000;
 const MIN_FALLBACK_CHUNK_SIZE = 4000;
@@ -910,6 +911,11 @@ async function retryAfterInitialFailure({
   throw lastError;
 }
 
+function canLowerReasoningEffort(model, apiOptions = {}) {
+  const effort = apiOptions.reasoningEffort || DEFAULT_REASONING_EFFORT;
+  return supportsReasoningEffort(model) && effort !== LOW_REASONING_EFFORT;
+}
+
 function buildRequestLabel(files, chunkIndex, totalChunks) {
   return formatApiRequestLabel({
     chunkIndex,
@@ -949,6 +955,26 @@ async function reviewChunkWithAdaptiveSplit({
       { maxAttempts: 1 }
     );
   } catch (err) {
+    // A section that ends on the output limit has usually spent the whole
+    // budget reasoning, not reviewing: smaller sections of dense code do the
+    // same and cost a full request each. Step the effort down once first.
+    if (isOutputLimitError(err) && canLowerReasoningEffort(model, apiOptions)) {
+      core?.warning(
+        `${requestLabel} reached the output token limit; retrying once with ${LOW_REASONING_EFFORT} reasoning effort.`
+      );
+      return reviewChunkWithAdaptiveSplit({
+        apiKey,
+        model,
+        systemPrompt,
+        files,
+        chunkIndex,
+        totalChunks,
+        maxChunkSize,
+        apiOptions: { ...apiOptions, reasoningEffort: LOW_REASONING_EFFORT },
+        fallbackPath,
+      });
+    }
+
     if (isRequestTimeoutError(err) || isOutputLimitError(err)) {
       const fallbackSize = Math.max(
         MIN_FALLBACK_CHUNK_SIZE,
